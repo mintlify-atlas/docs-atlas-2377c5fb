@@ -1,0 +1,77 @@
+---
+title: 'Cloud & Infrastructure Overview for Kubespray'
+description: 'Deploy Kubernetes with Kubespray on AWS, Azure, OpenStack, or vSphere. Covers the external CCM model, Terraform provisioning, and CSI driver options.'
+keywords: ['kubespray', 'cloud provider', 'cloud controller manager', 'terraform', 'infrastructure']
+---
+
+Kubespray supports deploying production-ready Kubernetes clusters across multiple cloud platforms and on-premises infrastructure. Depending on your target environment, you configure a cloud provider or an external cloud controller manager so that Kubernetes can manage cloud-specific resources such as load balancers, storage volumes, and node metadata.
+
+## Cloud provider vs. cloud controller manager
+
+Kubernetes originally shipped with in-tree cloud providers — code compiled directly into the `kube-controller-manager` binary. Since Kubernetes v1.31 (Kubespray v2.27), in-tree cloud provider support has been removed. Only the **external** cloud provider model is now supported.
+
+With the external model you set two variables in `group_vars/all/all.yml`:
+
+```yaml group_vars/all/all.yml
+cloud_provider: external
+external_cloud_provider: <provider>   # aws | azure | openstack | vsphere
+```
+
+An out-of-tree **cloud controller manager** (CCM) runs as a DaemonSet in the cluster and handles provider-specific reconciliation — tagging nodes, provisioning load balancers, and attaching storage — without requiring changes to core Kubernetes binaries.
+
+<Note>
+The legacy `cloud_provider: aws`, `cloud_provider: azure`, and `cloud_provider: vsphere` values that set the in-tree provider are no longer supported as of Kubernetes v1.31. Migrate to `cloud_provider: external` with the appropriate `external_cloud_provider` value.
+</Note>
+
+## Provisioning infrastructure
+
+Before running the Kubespray playbook, your cloud instances must already exist. Common approaches include:
+
+- **Terraform** — Kubespray ships community-maintained Terraform configurations under `contrib/terraform/` for AWS, OpenStack, and other providers.
+- **Ansible modules** — The `ec2` and `gce` Ansible modules can create instances before the main playbook runs.
+- **Manual creation** — Create instances through your cloud console or CLI, then populate an inventory file.
+
+### Terraform contrib directory
+
+The `contrib/terraform/` directory contains provider-specific Terraform configurations:
+
+| Directory | Provider |
+|-----------|----------|
+| `contrib/terraform/aws/` | Amazon Web Services |
+| `contrib/terraform/openstack/` | OpenStack |
+| `contrib/terraform/exoscale/` | Exoscale |
+| `contrib/terraform/hetzner/` | Hetzner Cloud |
+| `contrib/terraform/upcloud/` | UpCloud |
+| `contrib/terraform/vsphere/` | VMware vSphere |
+
+Each directory contains a `README.md` with provider-specific usage instructions, example `terraform.tfvars` files, and module definitions for networking, compute, and storage resources.
+
+## Supported providers
+
+<CardGroup cols={2}>
+  <Card title="Amazon Web Services" icon="aws" href="/cloud/aws">
+    Deploy on AWS with IAM roles, VPC tagging, dynamic inventory, and ELB integration.
+  </Card>
+  <Card title="Azure" icon="microsoft" href="/cloud/azure">
+    Deploy on Azure with service principal credentials, resource groups, and Azure Load Balancer support.
+  </Card>
+  <Card title="OpenStack" icon="cloud" href="/cloud/openstack">
+    Deploy on OpenStack with the external CCM, Cinder CSI, Octavia load balancers, and floating IPs.
+  </Card>
+  <Card title="vSphere" icon="server" href="/cloud/vsphere">
+    Deploy on VMware vSphere with the out-of-tree cloud provider and vSphere CSI driver.
+  </Card>
+</CardGroup>
+
+## Key considerations per provider
+
+| Provider | CCM | CSI storage | Load balancer |
+|----------|-----|-------------|---------------|
+| AWS | `external_cloud_provider: aws` | AWS EBS CSI | ELB / NLB via cloud controller |
+| Azure | `external_cloud_provider: azure` | Azure Disk CSI | Azure Load Balancer |
+| OpenStack | `external_cloud_provider: openstack` | Cinder CSI | Octavia (default) |
+| vSphere | `external_cloud_provider: vsphere` | vSphere CSI | Manual / MetalLB |
+
+<Tip>
+For bare-metal or non-cloud deployments you can omit `cloud_provider` entirely. Use MetalLB or another load balancer solution for `LoadBalancer`-type Services on bare metal.
+</Tip>

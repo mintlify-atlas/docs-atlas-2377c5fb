@@ -1,0 +1,155 @@
+---
+title: "Tuning Kubespray for Large-Scale Kubernetes Clusters"
+description: "Optimize Ansible parallelism, etcd performance, DNS, network prefixes, and resource limits when deploying Kubernetes clusters at scale with Kubespray."
+keywords: ["large deployments", "Ansible forks", "etcd scaling", "kubelet tuning", "Kubespray performance"]
+---
+
+Deploying hundreds of nodes with Kubespray requires tuning several layers of the stack: Ansible's own execution engine, Kubernetes control-plane components, etcd, DNS, and the container network. The adjustments below address the most common bottlenecks encountered in large-scale deployments.
+
+## Ansible parallelism
+
+By default Ansible operates on a small number of hosts in parallel. For large inventories you should raise the `forks` and `timeout` settings, either on the command line or in `ansible.cfg`.
+
+```bash
+ansible-playbook cluster.yml --forks=50 --timeout=600
+```
+
+Set `retry_stagger` in your inventory variables to spread out retry attempts and reduce load on the first control-plane node (which acts as the download delegate):
+
+```yaml inventory/group_vars/all/all.yml
+retry_stagger: 60
+```
+
+<Tip>
+  For a 200-node deployment, `--forks=50`, `--timeout=600`, and `retry_stagger: 60` are a reasonable starting point. Adjust based on your control-plane node's available CPU and network bandwidth.
+</Tip>
+
+## Download strategy
+
+Pulling container images and binaries independently on every node creates substantial external bandwidth pressure at scale. Use "pull once, push many" mode to have a single delegate node download everything and then distribute it across the cluster.
+
+```yaml inventory/group_vars/all/all.yml
+# Delegate downloads to the first control-plane node
+download_run_once: true
+
+# Or delegate to the Ansible controller itself
+download_localhost: true
+```
+
+You can also point all image pulls at an internal registry to eliminate internet egress entirely:
+
+```yaml inventory/group_vars/k8s_cluster/k8s-cluster.yml
+# Override per-component image repos to an intranet mirror
+kube_image_repo: "registry.internal.example.com/google-containers"
+```
+
+<Note>
+  When `download_run_once: true` and `download_localhost: false`, the delegate node pulls *all* images — including those it does not itself run — so plan for extra storage (~800 MB cache) on that node.
+</Note>
+
+## etcd event separation
+
+Storing Kubernetes events in the same etcd instance as cluster state increases write load significantly. Offload events to a dedicated etcd cluster:
+
+```yaml inventory/group_vars/k8s_cluster/k8s-cluster.yml
+etcd_events_cluster_setup: true
+```
+
+## DNS resource tuning
+
+At scale, CoreDNS can become a bottleneck if it is under-resourced. Tune replica count and resource limits to match your cluster size:
+
+```yaml inventory/group_vars/k8s_cluster/k8s-cluster.yml
+dns_replicas: 4
+dns_cpu_limit: "300m"
+dns_cpu_requests: "100m"
+dns_memory_limit: "512Mi"
+dns_memory_requests: "128Mi"
+```
+
+<Warning>
+  `dns_cpu_limit` and `dns_memory_limit` must always be greater than or equal to their corresponding `_requests` values. Kubernetes will reject pods where requests exceed limits.
+</Warning>
+
+## Kubernetes reliability tuning
+
+Frequent kubelet status updates and aggressive eviction timeouts increase API server load. These variables let you dial back the update frequency and give nodes more time to recover before pods are evicted:
+
+```yaml inventory/group_vars/k8s_cluster/k8s-cluster.yml
+# How often kubelet posts node status to the API server
+kubelet_status_update_frequency: 10s
+
+# How long the controller-manager waits before marking a node unhealthy
+kube_controller_node_monitor_grace_period: 40s
+
+# How frequently the controller-manager checks node conditions
+kube_controller_node_monitor_period: 5s
+
+# Time before evicting pods from a NotReady node
+kube_apiserver_pod_eviction_not_ready_timeout_seconds: 300
+
+# Time before evicting pods from an Unreachable node
+kube_apiserver_pod_eviction_unreachable_timeout_seconds: 300
+```
+
+## Component CPU and memory limits
+
+Every Kubespray role exposes `foo_cpu_limit`, `foo_cpu_requests`, `foo_memory_limit`, and `foo_memory_requests` variables. Locate the defaults in each role and override them in your inventory to match the actual capacity of your nodes.
+
+<Note>
+  Kubernetes uses `Mi`/`m` units while Docker uses `M` (without the `i`) and drops the `m` suffix for CPU millicores. Kubespray handles this conversion automatically — set all resource variables using Kubernetes units.
+</Note>
+
+## Network prefix sizing
+
+Default pod and service subnet sizes can be too small for large clusters. Adjust these variables before the initial deployment — they cannot be changed without redeploying:
+
+```yaml inventory/group_vars/k8s_cluster/k8s-net-calico.yml
+# CIDR per node for pod IPs (default /24 = 254 pods per node)
+kube_network_node_prefix: 24
+
+# Overall pod subnet
+kube_pods_subnet: 10.233.64.0/18
+
+# Service IP range
+kube_service_addresses: 10.233.0.0/18
+```
+
+## Calico route reflectors
+
+When using Calico or Canal, adding `calico_rr` nodes as route reflectors significantly reduces recovery time after host or network interruptions. Nodes can re-establish BGP peering with the nearest route reflector rather than waiting to reconnect to all peers.
+
+<Steps>
+  <Step title="Add calico_rr hosts to your inventory">
+    ```ini inventory/hosts.ini
+    [calico_rr]
+    node1 ansible_host=192.168.1.10
+    node2 ansible_host=192.168.1.11
+    ```
+  </Step>
+  <Step title="Ensure calico_rr nodes are also in the k8s_cluster group">
+    Route reflectors must be reachable Kubernetes nodes. Add them to `kube_node` or `kube_control_plane` as appropriate.
+  </Step>
+  <Step title="Run the cluster playbook">
+    Kubespray automatically configures BGP peering with the `calico_rr` group members during deployment.
+  </Step>
+</Steps>
+
+## Inventory tips for large clusters
+
+Building an Ansible inventory for hundreds of nodes is easier with dynamic inventory scripts. Refer to the [Ansible documentation on dynamic inventories](https://docs.ansible.com/ansible/latest/inventory_guide/intro_dynamic_inventory.html) and the Kubespray `contrib/inventory_builder` utility for generating host files programmatically.
+
+<CardGroup cols={2}>
+  <Card title="Download strategy" icon="download" href="/advanced/large-deployments#download-strategy">
+    Reduce external bandwidth with pull-once-push-many mode.
+  </Card>
+  <Card title="etcd operations" icon="database" href="/advanced/etcd">
+    Deep-dive into etcd topology and performance tuning.
+  </Card>
+  <Card title="DNS stack" icon="globe" href="/advanced/dns-stack">
+    Tune CoreDNS replicas and resource limits.
+  </Card>
+  <Card title="Proxy configuration" icon="shield" href="/advanced/proxy">
+    Route cluster traffic through an HTTP proxy.
+  </Card>
+</CardGroup>

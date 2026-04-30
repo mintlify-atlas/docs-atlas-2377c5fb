@@ -1,0 +1,181 @@
+---
+title: "Kubespray Requirements: Hardware, OS, and Software"
+description: "Hardware minimums, supported Linux distributions, Ansible and Python version requirements, and network prerequisites for deploying Kubernetes with Kubespray."
+keywords: ["kubespray", "requirements", "prerequisites", "ansible", "python", "kubernetes", "linux distributions"]
+---
+
+Before deploying a Kubernetes cluster with Kubespray, review the hardware, operating system, software, and network requirements below. Meeting all of these prerequisites before starting will prevent the most common deployment failures.
+
+## Kubernetes version
+
+Kubespray requires **Kubernetes v1.30 or later**. Older Kubernetes versions are not supported.
+
+## Hardware requirements
+
+These are the minimum memory values enforced by Kubespray. Your actual requirements will be higher depending on the workloads you intend to run. See the Kubernetes [Building Large Clusters](https://kubernetes.io/docs/setup/cluster-large/#size-of-master-and-master-components) guide for workload-based sizing.
+
+| Node role | Minimum memory |
+|---|---|
+| Control plane | 2 GB |
+| Worker node | 1 GB |
+
+## Supported Linux distributions
+
+Kubespray is tested and supported on the following Linux distributions:
+
+| Distribution | Supported versions | Notes |
+|---|---|---|
+| Flatcar Container Linux by Kinvolk | Current stable | |
+| Debian | Bookworm, Bullseye, Trixie | |
+| Ubuntu | 22.04, 24.04 | |
+| CentOS Stream / RHEL | 9, 10 | |
+| Fedora | 39, 40, 41, 42 | |
+| Fedora CoreOS | — | See [fcos notes](https://github.com/kubernetes-sigs/kubespray/blob/master/docs/operating_systems/fcos.md) |
+| openSUSE | Leap 15.x, Tumbleweed | |
+| Oracle Linux | 9, 10 | |
+| Alma Linux | 9, 10 | |
+| Rocky Linux | 9, 10 | Rocky Linux 10 is experimental |
+| Kylin Linux Advanced Server V10 | V10 | Experimental |
+| Amazon Linux 2 | 2 | Experimental |
+| UOS Linux | — | Experimental |
+| openEuler | — | Experimental |
+
+<Warning>
+  Upstart/SysV init based OS types are not supported. If the OS kernel version on your target nodes is below 4.19, review the [kernel requirements](https://github.com/kubernetes-sigs/kubespray/blob/master/docs/operations/kernel-requirements.md) before proceeding.
+</Warning>
+
+## Software requirements
+
+### Ansible and Python
+
+The machine that runs Ansible (your control node) needs:
+
+| Package | Minimum version | Notes |
+|---|---|---|
+| Ansible | 11.x (pinned in `requirements.txt`) | See compatibility table below |
+| Python | 3.11–3.13 | Required for Ansible >=2.18 |
+| Jinja2 | 2.11+ | Templating engine used by Ansible |
+| python-netaddr | Any | Required for IP address manipulation |
+| cryptography | 47.0.0+ | Required for `community.crypto` module |
+| jmespath | 1.1.0+ | Required for `json_query` Jinja2 filters |
+
+The `requirements.txt` in the Kubespray repository pins exact versions:
+
+```text
+ansible==11.13.0
+cryptography==47.0.0
+jmespath==1.1.0
+netaddr==1.3.0
+```
+
+Install them into a virtual environment to avoid version conflicts:
+
+```bash
+python3 -m venv kubespray-venv
+source kubespray-venv/bin/activate
+pip install -r requirements.txt
+```
+
+### Ansible Python compatibility
+
+Choose an Ansible version that is compatible with the Python version available on your control node:
+
+| Ansible version | Python version |
+|---|---|
+| &#62;=2.18.0, &#60;2.19.0 | 3.11–3.13 |
+
+<Note>
+  If pip reports that the latest supported Ansible version is older than what Kubespray requires, your Python version is likely too old. Python 3.9 is the minimum for Ansible 7.x; Python 3.11 is required for Ansible 2.18+.
+</Note>
+
+## Network requirements
+
+### Target node connectivity
+
+- **Internet access**: Target nodes must be able to pull container images from the internet. If your environment is air-gapped, see the [offline environment guide](/operations/offline-environment).
+- **IPv4 forwarding**: All target nodes must be configured to allow IPv4 forwarding.
+- **IPv6 forwarding**: Required only if you are using IPv6 for pods and services.
+
+### Firewall
+
+Kubespray does not manage firewall rules. You are responsible for configuring or disabling your firewall before deployment. An improperly configured firewall is the most common cause of node communication failures during deployment.
+
+At minimum, the following must be allowed between all cluster nodes:
+
+- TCP and UDP (all ports) for inter-node communication
+- ICMP for health checking
+- TCP port 6443 for the Kubernetes API server
+- UDP for vxlan overlay traffic (required for Calico and Flannel CNI)
+
+### Privilege escalation
+
+If you run Kubespray from a non-root user account, the target servers must have a working privilege escalation mechanism (such as `sudo`). Pass `--become` or `-b` to `ansible-playbook`, or set `ansible_become: true` in your inventory.
+
+## Supported components
+
+The table below shows the component versions bundled with the current Kubespray release.
+
+### Core
+
+| Component | Version |
+|---|---|
+| Kubernetes | 1.35.4 |
+| etcd | 3.6.10 |
+| containerd | 2.2.3 |
+| Docker | 28.3 |
+| CRI-O | 1.35.0 (experimental — Fedora, Ubuntu, CentOS only) |
+
+<Note>
+  CRI-O versions must align with the Kubernetes version. For example, Kubernetes 1.20.x requires CRI-O 1.20.
+</Note>
+
+### Network plugins
+
+The default CNI plugin is **Calico**. Vagrant deployments default to **Flannel**.
+
+| Plugin | Version |
+|---|---|
+| CNI plugins | 1.9.1 |
+| Calico | 3.31.5 |
+| Cilium | 1.19.3 |
+| Flannel | 0.28.4 |
+| Kube-OVN | 1.12.21 |
+| Kube-router | 2.1.1 |
+| Multus | 4.2.2 |
+| kube-vip | 1.0.3 |
+
+### Application add-ons
+
+| Component | Version |
+|---|---|
+| CoreDNS | 1.12.4 |
+| Helm | 3.18.4 |
+| cert-manager | 1.15.3 |
+| ArgoCD | 2.14.5 |
+| MetalLB | 0.13.9 |
+| Registry | 2.8.1 |
+
+### Storage plugins
+
+| Plugin | Version |
+|---|---|
+| aws-ebs-csi-plugin | 0.5.0 |
+| azure-csi-plugin | 1.10.0 |
+| cinder-csi-plugin | 1.30.0 |
+| gcp-pd-csi-plugin | 1.9.2 |
+| local-path-provisioner | 0.0.32 |
+| local-volume-provisioner | 2.5.0 |
+| node-feature-discovery | 0.16.4 |
+
+## Next steps
+
+Once you have confirmed that your environment meets all requirements, you are ready to deploy:
+
+<CardGroup cols={2}>
+  <Card title="Quick start" icon="rocket" href="/getting-started/quickstart">
+    Deploy a cluster using Docker, Vagrant, or direct Ansible invocation.
+  </Card>
+  <Card title="First cluster walkthrough" icon="list-check" href="/getting-started/first-cluster">
+    Step-by-step guide from infrastructure provisioning to smoke tests on GCP.
+  </Card>
+</CardGroup>

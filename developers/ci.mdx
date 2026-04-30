@@ -1,0 +1,169 @@
+---
+title: "Kubespray GitLab CI pipeline, stages, and coverage"
+description: "Understand the GitLab CI pipeline, test stages, node layouts, and OS/CNI/runtime coverage matrix used to validate every Kubespray pull request."
+---
+
+Kubespray uses a GitLab CI pipeline to validate every change across a wide matrix of operating systems, container runtimes, and CNI plugins. The pipeline runs on the Kubespray CI cluster hosted on Oracle Cloud Infrastructure and uses two types of runners. Understanding the pipeline structure helps you interpret test failures, add new test cases, and run tests locally before pushing.
+
+## Pipeline structure
+
+The CI configuration lives in `.gitlab-ci.yml` and its included files. Jobs are organised into five ordered stages:
+
+| Stage | Contents |
+|---|---|
+| `unit_tests` | Linting, Markdown validation, Vagrant and Terraform validation |
+| `part1` | Molecule role tests and all-in-one (AIO) cluster tests |
+| `part2` | Standard cluster tests across different node layouts, OS, runtime, and CNI combinations |
+| `part3` | Upgrade jobs, Terraform-provisioned cluster jobs, and control-plane recovery tests |
+| `special` | Manual and experimental jobs |
+
+Stages run sequentially: `unit_tests → part1 → part2 → part3 → special`. A stage failure blocks all subsequent stages.
+
+## Runner types
+
+Kubespray has two types of GitLab runners, both deployed on the CI cluster:
+
+<CardGroup cols={2}>
+  <Card title="Pod runners" icon="box">
+    Use the GitLab Kubernetes executor. Suitable for linting, molecule tests, and jobs that do not require VM-level isolation.
+  </Card>
+  <Card title="Vagrant runners" icon="server">
+    Custom executor running in pods with access to the libvirt socket on the host node. These runners can boot VMs for full end-to-end cluster tests using the `quay.io/kubespray/vagrant` Docker image.
+  </Card>
+</CardGroup>
+
+## Node layouts
+
+Each standard cluster test uses one of five node layout types to exercise different cluster topologies:
+
+<AccordionGroup>
+  <Accordion title="default">
+    A non-HA two-node setup. One node is a combined `kube_control_plane` + `etcd`. The other is a dedicated `kube_node`. This is the most common layout for quick smoke tests.
+  </Accordion>
+  <Accordion title="separate">
+    Three nodes, one of each type: a dedicated `kube_control_plane`, a dedicated `kube_node`, and a dedicated `etcd` member. Tests that role separation works correctly.
+  </Accordion>
+  <Accordion title="ha">
+    Five nodes: two etcd nodes, two control-plane nodes, and one worker node with role intersection. Tests high-availability control-plane behaviour.
+  </Accordion>
+  <Accordion title="all-in-one">
+    A single node running `kube_control_plane`, `etcd`, and `kube_node` merged. Useful for fast iteration and resource-constrained CI environments.
+  </Accordion>
+  <Accordion title="node-etcd-client">
+    Four nodes, all in `kube_node`, the first three also in `etcd`, and only one in `kube_control_plane`. Required to test configurations where nodes are etcd clients — for example, Cilium as the network plugin.
+  </Accordion>
+</AccordionGroup>
+
+<Note>
+  The canal network plugin deploys flannel for pod networking plus the Calico policy controller. It appears in test matrices as a separate CNI option.
+</Note>
+
+## Test coverage matrix
+
+The CI matrix is generated automatically by `tests/scripts/md-table/main.py`. Each cell shows whether a given OS + CNI combination is tested for that container runtime.
+
+### containerd
+
+| OS | calico | cilium | custom_cni | flannel | kube-ovn | kube-router | macvlan |
+|---|---|---|---|---|---|---|---|
+| almalinux9 | ✅ | ❌ | ❌ | ❌ | ✅ | ❌ | ❌ |
+| amazon | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ |
+| debian11 | ✅ | ❌ | ✅ | ❌ | ❌ | ❌ | ✅ |
+| debian12 | ✅ | ✅ | ✅ | ❌ | ❌ | ❌ | ❌ |
+| debian13 | ✅ | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ |
+| fedora39 | ✅ | ❌ | ❌ | ❌ | ❌ | ✅ | ❌ |
+| fedora41 | ✅ | ❌ | ❌ | ❌ | ❌ | ✅ | ❌ |
+| fedora42 | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ |
+| flatcar4081 | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ |
+| openeuler24 | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ |
+| rockylinux9 | ✅ | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ |
+| rockylinux10 | ✅ | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ |
+| ubuntu22 | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ |
+| ubuntu24 | ✅ | ✅ | ❌ | ✅ | ❌ | ✅ | ❌ |
+
+### CRI-O
+
+| OS | calico | cilium | custom_cni | flannel | kube-ovn | kube-router | macvlan |
+|---|---|---|---|---|---|---|---|
+| almalinux9 | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ |
+| fedora39 | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ |
+| fedora40 | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ |
+| fedora41 | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ |
+| ubuntu22 | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ |
+| ubuntu24 | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ |
+
+### Docker
+
+| OS | calico | cilium | custom_cni | flannel | kube-ovn | kube-router | macvlan |
+|---|---|---|---|---|---|---|---|
+| almalinux9 | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ |
+| debian11 | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ |
+| debian12 | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ |
+| fedora40 | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ |
+| ubuntu22 | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ |
+| ubuntu24 | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ |
+
+## CI variables
+
+The CI environment injects a set of extra variables from `test/common_vars.yml` to improve job reliability and avoid API rate-limiting. These include registry mirror configuration for both containerd and CRI-O:
+
+```yaml
+containerd_registries_mirrors:
+  - prefix: docker.io
+    mirrors:
+      - host: https://mirror.gcr.io
+        capabilities: ["pull", "resolve"]
+        skip_verify: false
+      - host: https://registry-1.docker.io
+        capabilities: ["pull", "resolve"]
+        skip_verify: false
+```
+
+Key cluster settings used by the CI cluster itself:
+
+```yaml
+kube_service_addresses: 172.30.0.0/18
+kube_pods_subnet: 172.30.64.0/18
+kube_network_plugin: calico
+calico_wireguard_enabled: True
+etcd_deployment_type: "host"
+helm_enabled: True
+cert_manager_enabled: True
+metrics_server_enabled: True
+```
+
+## Running unit tests locally
+
+The `unit_tests` stage checks that can be run on any developer machine:
+
+```bash
+# Activate your virtual environment first
+source venv/bin/activate
+
+# Run all pre-commit hooks (linting, yamllint, ansible-lint, shellcheck, etc.)
+pre-commit run -a
+
+# Regenerate the CI matrix and check it matches the committed version
+tests/scripts/md-table/main.py
+
+# Validate the Ansible collection builds cleanly
+tests/scripts/collection-build-install.sh
+```
+
+## Running Molecule tests locally
+
+Molecule tests run individual roles without a full cluster. Run them from the role directory:
+
+```bash
+cd roles/bootstrap-os
+molecule test
+```
+
+For iterative debugging:
+
+```bash
+molecule create    # Boot the test container
+molecule converge  # Apply the role
+molecule login     # Shell into the test environment
+molecule destroy   # Tear down when done
+```

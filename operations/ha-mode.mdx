@@ -1,0 +1,179 @@
+---
+title: 'High Availability Mode for Kubernetes Clusters'
+description: 'Configure highly available control planes with etcd clustering, load balancer options, and kubeconfig access patterns for production Kubespray deployments.'
+keywords: ['ha', 'high availability', 'etcd', 'load balancer', 'kube-vip', 'haproxy', 'nginx', 'control plane']
+---
+
+Kubespray supports fully highly available Kubernetes clusters by distributing the control plane across multiple nodes. Two components require HA endpoints: the etcd cluster and the kube-apiserver service. This page explains how each is handled and how to configure your preferred load balancing strategy.
+
+## etcd
+
+The etcd clients (`kube-api-masters`) are configured with the list of all etcd peers. When the etcd cluster has multiple instances, it is already configured in HA automatically — no additional setup is required beyond listing all etcd nodes in your inventory.
+
+### etcd deployment types
+
+<Tabs>
+  <Tab title="Host (default)">
+    etcd is installed as a systemd service on the etcd group members. This is the default and recommended method for production deployments, as it isolates etcd from the Kubernetes CNI network.
+
+    ```yaml
+    etcd_deployment_type: host
+    ```
+  </Tab>
+  <Tab title="Kubeadm">
+    Deploys etcd as a static pod on control plane hosts. This method is experimental and is only available for new deployments.
+
+    ```yaml
+    etcd_deployment_type: kubeadm
+    ```
+  </Tab>
+  <Tab title="Docker">
+    Runs etcd inside Docker containers on etcd group members. Only usable when `container_manager` is set to `docker`.
+
+    ```yaml
+    etcd_deployment_type: docker
+    ```
+  </Tab>
+</Tabs>
+
+### etcd metrics
+
+To expose etcd metrics on a separate HTTP port, define the following in your inventory:
+
+```yaml
+etcd_metrics_port: 2381
+```
+
+To create an `etcd-metrics` service and associated endpoints in the `kube-system` namespace for scraping by kube-prometheus-stack:
+
+```yaml
+etcd_metrics_service_labels:
+  k8s-app: etcd
+  app.kubernetes.io/managed-by: Kubespray
+  app: kube-prometheus-stack-kube-etcd
+  release: kube-prometheus-stack
+```
+
+To fully override the metrics exposition URL:
+
+```yaml
+etcd_listen_metrics_urls: "http://0.0.0.0:2381"
+```
+
+### etcd with a load balancer
+
+To front etcd with an external L4/TCP or L7 SSL-passthrough VIP, override these variables in `group_vars`:
+
+- `etcd_access_addresses`
+- `etcd_client_url`
+- `etcd_cert_alt_names`
+- `etcd_cert_alt_ips`
+
+<CodeGroup>
+
+```yaml VIP with FQDN
+etcd_access_addresses: https://etcd.example.com:2379
+etcd_client_url: https://etcd.example.com:2379
+etcd_cert_alt_names:
+  - "etcd.kube-system.svc.{{ dns_domain }}"
+  - "etcd.kube-system.svc"
+  - "etcd.kube-system"
+  - "etcd"
+  - "etcd.example.com"
+```
+
+```yaml VIP with IP only
+etcd_access_addresses: https://2.3.7.9:2379
+etcd_client_url: https://2.3.7.9:2379
+etcd_cert_alt_ips:
+  - "2.3.7.9"
+```
+
+</CodeGroup>
+
+## Kube-apiserver load balancing
+
+Kubernetes components require a load balancer to access the apiservers. Kubespray provides several options.
+
+### Local load balancer (default)
+
+By default, Kubespray deploys an nginx-based proxy on each non-master node — referred to as localhost load balancing. It is controlled by `loadbalancer_apiserver_localhost`, which defaults to `true` (or `false` when an external `loadbalancer_apiserver` is defined).
+
+```yaml
+# Optional overrides
+loadbalancer_apiserver_localhost: true
+loadbalancer_apiserver_port: 6443       # defaults to kube_apiserver_port
+loadbalancer_apiserver_pod_name: nginx  # name of the loadbalancer container
+```
+
+<Note>
+  Kubespray only configures kubelet and kube-proxy on non-master nodes to use the local internal load balancer. Master nodes always contact the API via their local bind IP.
+</Note>
+
+### External load balancer (HAProxy example)
+
+If you choose not to use the local internal load balancer, you need kube-vip or your own external LB. Here is an example HAProxy configuration:
+
+```text
+listen kubernetes-apiserver-https
+  bind <VIP>:8383
+  mode tcp
+  option log-health-checks
+  timeout client 3h
+  timeout server 3h
+  server master1 <IP1>:6443 check check-ssl verify none inter 10000
+  server master2 <IP2>:6443 check check-ssl verify none inter 10000
+  balance roundrobin
+```
+
+And the corresponding Kubespray inventory variables:
+
+```yaml
+apiserver_loadbalancer_domain_name: "my-apiserver-lb.example.com"
+loadbalancer_apiserver:
+  address: <VIP>
+  port: 8383
+```
+
+<Warning>
+  The default kube-apiserver configuration binds to all interfaces. Use a different port for the VIP, or set `kube_apiserver_bind_address` so the API only listens on a specific interface, to avoid conflicts with HAProxy binding on the VIP address.
+</Warning>
+
+The domain name (or the default `lb-apiserver.kubernetes.local`) is inserted into `/etc/hosts` on all servers in the `k8s_cluster` group and wired into the generated self-signed TLS certificates. The HAProxy service itself requires its own VIP management, which is outside the scope of Kubespray.
+
+<Tip>
+  If you need to include external load balancer VIPs in the generated cluster certificates, add them to `supplementary_addresses_in_ssl_keys`. This is required when TLS is terminated at the external LB.
+</Tip>
+
+### API endpoint routing summary
+
+The table below shows how API endpoint access is resolved for each node type under different configurations:
+
+| Endpoint type | kube\_control\_plane | non-master | external |
+|---|---|---|---|
+| Local LB (default) | `https://dbip:sp` | `https://lc:nsp` | `https://m[0].aip:sp` |
+| Local LB + cbip | `https://cbip:sp` and `https://lc:nsp` | `https://lc:nsp` | `https://m[0].aip:sp` |
+| Local LB + unmanaged LB | `https://dbip:sp` | `https://lc:nsp` | `https://ext` |
+| External LB, no internal | `https://dbip:sp` | `https://lb:lp` | `https://lb:lp` |
+| No ext/int LB | `https://dbip:sp` | `https://m[0].aip:sp` | `https://m[0].aip:sp` |
+
+**Key:**
+
+<AccordionGroup>
+  <Accordion title="Variable legend">
+    - `m[0]` — first node in the `kube_control_plane` group
+    - `lb` — LB FQDN (`apiserver_loadbalancer_domain_name`)
+    - `ext` — externally load balanced VIP:port and FQDN, not managed by Kubespray
+    - `lc` — localhost
+    - `cbip` — custom bind IP (`kube_apiserver_bind_address`)
+    - `dbip` — localhost for the default bind IP `0.0.0.0`
+    - `nsp` — nginx secure port (`loadbalancer_apiserver_port`, defers to `sp`)
+    - `sp` — secure port (`kube_apiserver_port`)
+    - `lp` — LB port (`loadbalancer_apiserver.port`, defers to the secure port)
+    - `aip` — `access_ip`, defers to the node IP
+  </Accordion>
+</AccordionGroup>
+
+<Note>
+  `loadbalancer_apiserver` and `loadbalancer_apiserver_localhost` are mutually exclusive. Defining an external LB automatically sets the localhost LB to `false`.
+</Note>

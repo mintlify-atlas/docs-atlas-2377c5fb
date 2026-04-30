@@ -1,0 +1,295 @@
+---
+title: "Inventory Configuration for Kubespray Clusters"
+description: "Structure Ansible inventory files, define host groups, configure group_vars, and use the inventory builder script for Kubespray deployments."
+keywords: ["kubespray", "inventory", "ansible", "group_vars", "kube_control_plane", "kube_node", "etcd"]
+---
+
+The Ansible inventory is the foundation of every Kubespray deployment. It tells Kubespray which machines belong to your cluster, what roles they play, and how to connect to them. Before running any playbook, you need a valid inventory that defines your control plane nodes, worker nodes, and etcd members.
+
+## Host groups
+
+Kubespray organizes hosts into three primary groups:
+
+<CardGroup cols={3}>
+  <Card title="kube_control_plane" icon="server">
+    Nodes where the Kubernetes control plane components run: API server, scheduler, and controller manager.
+  </Card>
+  <Card title="kube_node" icon="circle-nodes">
+    Nodes where pod workloads are scheduled. A node can belong to both `kube_control_plane` and `kube_node` to act as both.
+  </Card>
+  <Card title="etcd" icon="database">
+    Nodes that form the etcd cluster. Use at least 3 nodes for fault tolerance. Can overlap with `kube_control_plane`.
+  </Card>
+</CardGroup>
+
+Kubespray also supports two special groups:
+
+- **`calico_rr`** — Nodes designated as Calico BGP route reflectors for large-scale deployments.
+- **`bastion`** — A jump host used when cluster nodes are not directly reachable from the Ansible controller.
+
+The group **`k8s_cluster`** is defined dynamically as the union of `kube_node`, `kube_control_plane`, and `calico_rr`. This group is used internally and as the scope for cluster-wide variables in `group_vars/k8s_cluster/`.
+
+<Note>
+  When `kube_node` contains the same hosts as `etcd`, your etcd nodes are also schedulable for Kubernetes workloads. To keep etcd isolated, ensure the `etcd` group does not overlap with `kube_node`.
+</Note>
+
+## Inventory file formats
+
+Kubespray accepts inventory files in INI, YAML, or dynamic inventory formats. The INI format is the most common for static clusters.
+
+<Tabs>
+  <Tab title="INI (recommended)">
+    The sample inventory at `inventory/sample/inventory.ini` uses INI format with stacked etcd on control plane nodes:
+
+    ```ini
+    # This inventory describes a HA topology with stacked etcd (same nodes as
+    # control plane) and 3 worker nodes.
+
+    [kube_control_plane]
+    # node1 ansible_host=95.54.0.12  # ip=10.3.0.1 etcd_member_name=etcd1
+    # node2 ansible_host=95.54.0.13  # ip=10.3.0.2 etcd_member_name=etcd2
+    # node3 ansible_host=95.54.0.14  # ip=10.3.0.3 etcd_member_name=etcd3
+
+    [etcd:children]
+    kube_control_plane
+
+    [kube_node]
+    # node4 ansible_host=95.54.0.15  # ip=10.3.0.4
+    # node5 ansible_host=95.54.0.16  # ip=10.3.0.5
+    # node6 ansible_host=95.54.0.17  # ip=10.3.0.6
+    ```
+
+    A fully populated example with 2 control plane nodes and 4 workers:
+
+    ```ini
+    ## Configure 'ip' variable to bind kubernetes services on a
+    ## different ip than the default iface
+    node1 ansible_host=95.54.0.12 ip=10.3.0.1
+    node2 ansible_host=95.54.0.13 ip=10.3.0.2
+    node3 ansible_host=95.54.0.14 ip=10.3.0.3
+    node4 ansible_host=95.54.0.15 ip=10.3.0.4
+    node5 ansible_host=95.54.0.16 ip=10.3.0.5
+    node6 ansible_host=95.54.0.17 ip=10.3.0.6
+
+    [kube_control_plane]
+    node1
+    node2
+
+    [etcd]
+    node1
+    node2
+    node3
+
+    [kube_node]
+    node2
+    node3
+    node4
+    node5
+    node6
+    ```
+  </Tab>
+  <Tab title="YAML">
+    You can also write inventory in YAML format, which is useful when generating inventory programmatically:
+
+    ```yaml
+    all:
+      hosts:
+        node1:
+          ansible_host: 95.54.0.12
+          ip: 10.3.0.1
+          etcd_member_name: etcd1
+        node2:
+          ansible_host: 95.54.0.13
+          ip: 10.3.0.2
+          etcd_member_name: etcd2
+        node3:
+          ansible_host: 95.54.0.14
+          ip: 10.3.0.3
+      children:
+        kube_control_plane:
+          hosts:
+            node1:
+            node2:
+        kube_node:
+          hosts:
+            node2:
+            node3:
+        etcd:
+          hosts:
+            node1:
+            node2:
+            node3:
+    ```
+  </Tab>
+</Tabs>
+
+## Host variables
+
+You can set per-host variables inline in the inventory or in `host_vars/<hostname>.yml`. The most important host variables are:
+
+<AccordionGroup>
+  <Accordion title="ip">
+    The IP address used to bind Kubernetes services on that node. This would usually be the private/internal IP. If unset, Ansible falls back to `ansible_default_ipv4.address`.
+
+    ```ini
+    node1 ansible_host=95.54.0.12 ip=10.3.0.1
+    ```
+  </Accordion>
+  <Accordion title="access_ip">
+    The IP address other hosts use to connect to this node. Required in cloud environments like OpenStack or GCE where nodes have separate floating and private IPs.
+
+    ```ini
+    node1 ansible_host=95.54.0.12 ip=10.3.0.1 access_ip=10.3.0.1
+    ```
+  </Accordion>
+  <Accordion title="etcd_member_name">
+    Required for etcd cluster members. Set a unique name per etcd node. Nodes not in the `etcd` group do not need this variable.
+
+    ```ini
+    node1 ansible_host=95.54.0.12 ip=10.3.0.1 etcd_member_name=etcd1
+    ```
+  </Accordion>
+  <Accordion title="ansible_user">
+    The SSH user Ansible uses to connect to the host. Set this if your nodes require a non-default SSH user.
+
+    ```ini
+    node1 ansible_host=95.54.0.12 ansible_user=ubuntu
+    ```
+  </Accordion>
+</AccordionGroup>
+
+## Group variables
+
+Kubespray reads configuration from YAML files under `inventory/<name>/group_vars/`. These files are organized into two scopes:
+
+<Tabs>
+  <Tab title="all/">
+    Variables in `group_vars/all/` apply to every host in the inventory. The primary file is `all.yml`:
+
+    ```yaml
+    # group_vars/all/all.yml
+
+    ## Binary installation directory
+    bin_dir: /usr/local/bin
+
+    ## External load balancer for the API server
+    # loadbalancer_apiserver:
+    #   address: 1.2.3.4
+    #   port: 1234
+
+    ## Local load balancer port (must be 6443)
+    loadbalancer_apiserver_port: 6443
+
+    ## Upstream DNS servers
+    # upstream_dns_servers:
+    #   - 8.8.8.8
+    #   - 8.8.4.4
+
+    ## HTTP proxy settings
+    # http_proxy: ""
+    # https_proxy: ""
+    # no_proxy: ""
+
+    ## NTP configuration
+    ntp_enabled: false
+    ntp_servers:
+      - "0.pool.ntp.org iburst"
+      - "1.pool.ntp.org iburst"
+    ```
+
+    Runtime-specific variables live in dedicated files within `all/`:
+
+    | File | Purpose |
+    |---|---|
+    | `containerd.yml` | containerd registry mirrors and runtime options |
+    | `cri-o.yml` | CRI-O registry and runtime configuration |
+    | `docker.yml` | Docker daemon options |
+    | `etcd.yml` | etcd deployment type and version |
+    | `offline.yml` | Air-gapped / offline installation settings |
+  </Tab>
+  <Tab title="k8s_cluster/">
+    Variables in `group_vars/k8s_cluster/` apply to all nodes in the `k8s_cluster` group (control plane + workers). The primary file is `k8s-cluster.yml`:
+
+    ```yaml
+    # group_vars/k8s_cluster/k8s-cluster.yml
+
+    # Kubernetes version
+    # kube_version: v1.31.0
+
+    # Network plugin: calico, cilium, flannel, kube-ovn, kube-router
+    kube_network_plugin: calico
+
+    # Pod subnet
+    kube_pods_subnet: 10.233.64.0/18
+
+    # Service subnet
+    kube_service_addresses: 10.233.0.0/18
+
+    # Container runtime: containerd, crio, docker
+    container_manager: containerd
+
+    # kube-proxy mode
+    kube_proxy_mode: ipvs
+
+    # DNS cluster name
+    cluster_name: cluster.local
+    ```
+
+    Network plugin-specific overrides live in dedicated files:
+
+    | File | Plugin |
+    |---|---|
+    | `k8s-net-calico.yml` | Calico configuration |
+    | `k8s-net-cilium.yml` | Cilium configuration |
+    | `k8s-net-flannel.yml` | Flannel configuration |
+    | `k8s-net-kube-ovn.yml` | Kube-OVN configuration |
+    | `k8s-net-kube-router.yml` | Kube-router configuration |
+  </Tab>
+</Tabs>
+
+## Bastion host configuration
+
+If your cluster nodes only have private IP addresses, add a bastion host entry to your inventory so Ansible can route SSH connections through it:
+
+```ini
+[bastion]
+bastion ansible_host=x.x.x.x
+```
+
+Replace `x.x.x.x` with the public IP of the bastion. Ansible will automatically proxy all SSH connections to cluster nodes through the bastion using SSH agent forwarding.
+
+<Tip>
+  Set `ansible_user` on the bastion host entry if the SSH user differs from the one used to connect to cluster nodes.
+</Tip>
+
+## Using the inventory builder script
+
+Kubespray includes an inventory builder script that generates an INI inventory from a list of IP addresses. This is the fastest way to get started:
+
+<Steps>
+  <Step title="Copy the sample inventory">
+    ```bash
+    cp -r inventory/sample inventory/mycluster
+    ```
+  </Step>
+  <Step title="Define your node IPs">
+    ```bash
+    declare -a IPS=(10.10.1.3 10.10.1.4 10.10.1.5)
+    ```
+  </Step>
+  <Step title="Run the inventory builder">
+    ```bash
+    CONFIG_FILE=inventory/mycluster/hosts.yaml \
+      python3 contrib/inventory_builder/inventory.py ${IPS[@]}
+    ```
+
+    The script creates `hosts.yaml` with nodes automatically distributed across `kube_control_plane`, `etcd`, and `kube_node` groups.
+  </Step>
+  <Step title="Review and adjust the generated inventory">
+    Open `inventory/mycluster/hosts.yaml` and verify the group assignments match your desired topology. Edit `group_vars/` files to set cluster-specific options before running the playbook.
+  </Step>
+</Steps>
+
+<Warning>
+  The inventory builder assigns the first two nodes as control plane by default. Adjust group memberships manually if you need a different topology, such as single control plane or dedicated etcd nodes.
+</Warning>

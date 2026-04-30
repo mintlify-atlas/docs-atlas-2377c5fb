@@ -1,0 +1,126 @@
+---
+title: "Kubespray: Ansible-Powered Kubernetes Cluster Deployment"
+description: "Learn what Kubespray is, how it compares to kubeadm and kops, which Linux distributions it supports, and what components it deploys."
+keywords: ["kubespray", "kubernetes", "ansible", "cluster deployment", "kubeadm", "kops"]
+---
+
+Kubespray is a collection of Ansible playbooks that deploys and manages production-ready Kubernetes clusters on any cloud provider or bare metal infrastructure. It combines Ansible's generic OS configuration management with kubeadm's Kubernetes lifecycle management to give you a composable, multi-platform deployment tool that works on AWS, GCE, Azure, OpenStack, vSphere, Equinix Metal, and bare metal alike.
+
+## What Kubespray does
+
+Kubespray handles the full cluster lifecycle: initial provisioning, node scaling, upgrades, and cluster reset. You define your infrastructure in an Ansible inventory file, adjust variables in `group_vars`, and run a playbook. Kubespray takes care of installing container runtimes, configuring networking plugins, bootstrapping etcd, and standing up the Kubernetes control plane.
+
+<CardGroup cols={2}>
+  <Card title="Quick start" icon="rocket" href="/getting-started/quickstart">
+    Get to a running cluster in minutes using Docker, Vagrant, or Ansible.
+  </Card>
+  <Card title="First cluster walkthrough" icon="list-check" href="/getting-started/first-cluster">
+    Step-by-step guide from infrastructure provisioning to smoke tests.
+  </Card>
+  <Card title="Requirements" icon="clipboard-check" href="/getting-started/requirements">
+    Hardware, OS, and software prerequisites before you begin.
+  </Card>
+  <Card title="Configuration reference" icon="sliders" href="/configuration/variables">
+    Explore all configurable variables and inventory options.
+  </Card>
+</CardGroup>
+
+## Comparison with other tools
+
+### Kubespray vs kubeadm
+
+[kubeadm](https://github.com/kubernetes/kubeadm) provides domain knowledge of the Kubernetes cluster lifecycle — self-hosted layouts, dynamic discovery services, and cluster bootstrapping primitives. Kubespray handles generic OS configuration tasks from the Ansible world, plus initial Kubernetes clustering (with networking plugins included) and control plane bootstrapping.
+
+Kubespray has used kubeadm internally for cluster creation since v2.3, consuming its lifecycle management expertise while offloading OS-level configuration. This means you get the benefits of both tools.
+
+### Kubespray vs kops
+
+[kops](https://github.com/kubernetes/kops) performs provisioning and orchestration itself and is more tightly integrated with the unique features of the clouds it supports. Kubespray runs on bare metal and most clouds, using Ansible as its substrate — making it less opinionated about where you deploy.
+
+If you work with Ansible already, run clusters on multiple platforms, or need bare metal support, Kubespray is the better fit. If you only target a single cloud and want tighter native integration, kops may be preferable.
+
+## Supported Linux distributions
+
+| Distribution | Versions |
+|---|---|
+| Flatcar Container Linux by Kinvolk | Current stable |
+| Debian | Bookworm, Bullseye, Trixie |
+| Ubuntu | 22.04, 24.04 |
+| CentOS Stream / RHEL | 9, 10 |
+| Fedora | 39, 40, 41, 42 |
+| Fedora CoreOS | See [fcos notes](https://github.com/kubernetes-sigs/kubespray/blob/master/docs/operating_systems/fcos.md) |
+| openSUSE | Leap 15.x / Tumbleweed |
+| Oracle Linux | 9, 10 |
+| Alma Linux | 9, 10 |
+| Rocky Linux | 9, 10 (10 is experimental) |
+| Kylin Linux Advanced Server V10 | Experimental |
+| Amazon Linux 2 | Experimental |
+| UOS Linux | Experimental |
+| openEuler | Experimental |
+
+<Note>
+  Upstart/SysV init based OS types are not supported. If your OS kernel version is below 4.19, review the [kernel requirements](https://github.com/kubernetes-sigs/kubespray/blob/master/docs/operations/kernel-requirements.md) before deploying.
+</Note>
+
+## Supported components
+
+Kubespray installs and manages a curated set of Kubernetes ecosystem components. The versions below reflect the current release.
+
+### Core
+
+| Component | Version |
+|---|---|
+| Kubernetes | 1.35.4 |
+| etcd | 3.6.10 |
+| containerd | 2.2.3 |
+| Docker | 28.3 |
+| CRI-O | 1.35.0 (experimental) |
+
+### Network plugins
+
+Kubespray supports ten CNI plugins. The default is **Calico**, except when using Vagrant where **Flannel** is the default.
+
+| Plugin | Description |
+|---|---|
+| [Calico](https://docs.tigera.io/calico/latest/about/) v3.31.5 | Flexible networking and network policy, supports BGP and overlay modes |
+| [Cilium](https://cilium.io/) v1.19.3 | eBPF-based L3/4/7 networking with kernel-level visibility |
+| [Flannel](https://github.com/flannel-io/flannel) v0.28.4 | Simple gre/vxlan layer 2 overlay networking |
+| [Kube-OVN](https://github.com/alauda/kube-ovn) v1.12.21 | OVN-based network virtualization for enterprises |
+| [Kube-router](https://github.com/cloudnativelabs/kube-router) v2.1.1 | L3 CNI using IPVS, iptables, and BGP |
+| [Multus](https://github.com/k8snetworkplumbingwg/multus-cni) v4.2.2 | Meta-plugin enabling multiple network interfaces per pod |
+| [kube-vip](https://github.com/kube-vip/kube-vip) v1.0.3 | Virtual IP and load balancing for control plane |
+| CNI plugins | v1.9.1 |
+
+### Application add-ons
+
+| Component | Version |
+|---|---|
+| CoreDNS | 1.12.4 |
+| Helm | 3.18.4 |
+| cert-manager | 1.15.3 |
+| ArgoCD | 2.14.5 |
+| MetalLB | 0.13.9 |
+| Registry | 2.8.1 |
+
+### Storage plugins
+
+| Plugin | Version |
+|---|---|
+| aws-ebs-csi-plugin | 0.5.0 |
+| azure-csi-plugin | 1.10.0 |
+| cinder-csi-plugin | 1.30.0 |
+| gcp-pd-csi-plugin | 1.9.2 |
+| local-path-provisioner | 0.0.32 |
+| local-volume-provisioner | 2.5.0 |
+| node-feature-discovery | 0.16.4 |
+
+## Where to go next
+
+<CardGroup cols={2}>
+  <Card title="Quick start" icon="rocket" href="/getting-started/quickstart">
+    Deploy a cluster quickly using the Docker image, Vagrant, or Ansible.
+  </Card>
+  <Card title="Requirements" icon="clipboard-check" href="/getting-started/requirements">
+    Review all hardware, OS, and software requirements before deploying.
+  </Card>
+</CardGroup>

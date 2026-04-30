@@ -1,0 +1,408 @@
+---
+title: "Deploy Your First Kubernetes Cluster with Kubespray on GCP"
+description: "Step-by-step walkthrough: provision GCP instances, configure networking and SSH, set up Kubespray, deploy the cluster, and verify with smoke tests."
+keywords: ["kubespray", "first cluster", "google cloud", "gcp", "kubernetes", "tutorial", "step by step"]
+---
+
+This tutorial walks you through deploying a production-style Kubernetes cluster using Kubespray on Google Cloud Platform. It covers everything from provisioning compute instances to verifying that networking, DNS, and deployments work correctly. The approach is inspired by [Kubernetes The Hard Way](https://github.com/kelseyhightower/kubernetes-the-hard-way), but uses Kubespray to manage the complexity of cluster configuration.
+
+## What you will build
+
+You will provision three control plane nodes and three worker nodes on GCP, connect them with a dedicated VPC network, deploy Kubernetes with Calico as the CNI plugin, and verify the cluster with a series of smoke tests.
+
+## Prerequisites
+
+Before you begin, you need:
+
+- A [Google Cloud Platform](https://cloud.google.com/) account with $300 in free credits (available on sign-up)
+- The [Google Cloud SDK](https://cloud.google.com/sdk/) installed and configured with a default compute region and zone
+- [kubectl](https://kubernetes.io/docs/tasks/tools/install-kubectl/) installed locally
+- A Linux or macOS environment with Python 3
+
+## Provision the infrastructure
+
+<Steps>
+  <Step title="Create the VPC network">
+    Create a dedicated VPC network to isolate the Kubernetes cluster:
+
+    ```bash
+    gcloud compute networks create kubernetes-the-kubespray-way --subnet-mode custom
+    ```
+
+    Create a subnet with an address range large enough for all cluster nodes:
+
+    ```bash
+    gcloud compute networks subnets create kubernetes \
+      --network kubernetes-the-kubespray-way \
+      --range 10.240.0.0/24
+    ```
+
+    The `10.240.0.0/24` range supports up to 254 compute instances.
+  </Step>
+  <Step title="Configure firewall rules">
+    Allow internal communication across all protocols. The vxlan UDP protocol must be permitted for the Calico CNI plugin to function:
+
+    ```bash
+    gcloud compute firewall-rules create kubernetes-the-kubespray-way-allow-internal \
+      --allow tcp,udp,icmp \
+      --network kubernetes-the-kubespray-way \
+      --source-ranges 10.240.0.0/24
+    ```
+
+    Allow external SSH, ICMP, and HTTPS access:
+
+    ```bash
+    gcloud compute firewall-rules create kubernetes-the-kubespray-way-allow-external \
+      --allow tcp:80,tcp:6443,tcp:443,tcp:22,icmp \
+      --network kubernetes-the-kubespray-way \
+      --source-ranges 0.0.0.0/0
+    ```
+  </Step>
+  <Step title="Create control plane instances">
+    Provision three Ubuntu 24.04 instances to host the Kubernetes control plane:
+
+    ```bash
+    for i in 0 1 2; do
+      gcloud compute instances create controller-${i} \
+        --async \
+        --boot-disk-size 200GB \
+        --can-ip-forward \
+        --image-family ubuntu-2404-lts-amd64 \
+        --image-project ubuntu-os-cloud \
+        --machine-type e2-standard-2 \
+        --private-network-ip 10.240.0.1${i} \
+        --scopes compute-rw,storage-ro,service-management,service-control,logging-write,monitoring \
+        --subnet kubernetes \
+        --tags kubernetes-the-kubespray-way,controller
+    done
+    ```
+  </Step>
+  <Step title="Create worker instances">
+    Provision three Ubuntu 24.04 instances to host Kubernetes worker nodes:
+
+    ```bash
+    for i in 0 1 2; do
+      gcloud compute instances create worker-${i} \
+        --async \
+        --boot-disk-size 200GB \
+        --can-ip-forward \
+        --image-family ubuntu-2404-lts-amd64 \
+        --image-project ubuntu-os-cloud \
+        --machine-type e2-standard-2 \
+        --private-network-ip 10.240.0.2${i} \
+        --scopes compute-rw,storage-ro,service-management,service-control,logging-write,monitoring \
+        --subnet kubernetes \
+        --tags kubernetes-the-kubespray-way,worker
+    done
+    ```
+  </Step>
+  <Step title="Verify the instances">
+    List all instances tagged for this cluster and confirm they are running:
+
+    ```bash
+    gcloud compute instances list --filter="tags.items=kubernetes-the-kubespray-way"
+    ```
+
+    Expected output:
+
+    ```text
+    NAME          ZONE        MACHINE_TYPE   PREEMPTIBLE  INTERNAL_IP  EXTERNAL_IP    STATUS
+    controller-0  us-west1-c  e2-standard-2               10.240.0.10  XX.XX.XX.XXX   RUNNING
+    controller-1  us-west1-c  e2-standard-2               10.240.0.11  XX.XXX.XXX.XX  RUNNING
+    controller-2  us-west1-c  e2-standard-2               10.240.0.12  XX.XXX.XX.XXX  RUNNING
+    worker-0      us-west1-c  e2-standard-2               10.240.0.20  XX.XX.XXX.XXX  RUNNING
+    worker-1      us-west1-c  e2-standard-2               10.240.0.21  XX.XX.XX.XXX   RUNNING
+    worker-2      us-west1-c  e2-standard-2               10.240.0.22  XX.XXX.XX.XX   RUNNING
+    ```
+  </Step>
+  <Step title="Verify SSH access">
+    Kubespray uses SSH to configure each node. Test that SSH works from your local machine:
+
+    ```bash
+    IP_CONTROLLER_0=$(gcloud compute instances list \
+      --filter="tags.items=kubernetes-the-kubespray-way AND name:controller-0" \
+      --format="value(EXTERNAL_IP)")
+    USERNAME=$(whoami)
+    ssh $USERNAME@$IP_CONTROLLER_0
+    ```
+
+    Repeat this for all controller and worker nodes to confirm SSH access before proceeding.
+  </Step>
+</Steps>
+
+<Tip>
+  Reserve static external IP addresses for your instances if you plan to shut them down and restart them later. Without fixed IPs, your inventory will need to be updated every time a VM restarts. See the [GCP guide for reserving static IPs](https://cloud.google.com/compute/docs/ip-addresses/reserve-static-external-ip-address).
+</Tip>
+
+## Set up Kubespray
+
+<Steps>
+  <Step title="Create a Python virtual environment">
+    Ansible is a Python application. Use a virtual environment to isolate its dependencies:
+
+    ```bash
+    python3 -m venv venv
+    source venv/bin/activate
+    ```
+  </Step>
+  <Step title="Clone the Kubespray repository">
+    ```bash
+    git clone https://github.com/kubernetes-sigs/kubespray.git
+    cd kubespray
+    ```
+  </Step>
+  <Step title="Install Ansible and dependencies">
+    ```bash
+    pip install -r requirements.txt
+    ```
+  </Step>
+  <Step title="Copy the sample inventory">
+    ```bash
+    cp -rfp inventory/sample inventory/mycluster
+    ```
+  </Step>
+  <Step title="Configure the inventory">
+    Retrieve the external IPs of your instances, then open `inventory/mycluster/inventory.ini` and configure it so that `controller-0`, `controller-1`, and `controller-2` are in the `kube_control_plane` group and `worker-0`, `worker-1`, and `worker-2` are in the `kube_node` group. Set the `ip` variable for each node to its internal VPC IP address:
+
+    ```bash
+    gcloud compute instances list --filter="tags.items=kubernetes-the-kubespray-way"
+    ```
+
+    ```ini
+    [kube_control_plane]
+    controller-0 ansible_host=<EXTERNAL_IP_0> ip=10.240.0.10
+    controller-1 ansible_host=<EXTERNAL_IP_1> ip=10.240.0.11
+    controller-2 ansible_host=<EXTERNAL_IP_2> ip=10.240.0.12
+
+    [etcd:children]
+    kube_control_plane
+
+    [kube_node]
+    worker-0 ansible_host=<EXTERNAL_IP_W0> ip=10.240.0.20
+    worker-1 ansible_host=<EXTERNAL_IP_W1> ip=10.240.0.21
+    worker-2 ansible_host=<EXTERNAL_IP_W2> ip=10.240.0.22
+
+    [k8s_cluster:children]
+    kube_control_plane
+    kube_node
+    ```
+  </Step>
+  <Step title="Configure SSL and add-ons">
+    Open `inventory/mycluster/group_vars/k8s_cluster/k8s_cluster.yml` and add the external IP addresses of your controller nodes to `supplementary_addresses_in_ssl_keys`. This allows you to reach the Kubernetes API server from outside the VPC:
+
+    ```yaml
+    supplementary_addresses_in_ssl_keys:
+      - <EXTERNAL_IP_CONTROLLER_0>
+      - <EXTERNAL_IP_CONTROLLER_1>
+      - <EXTERNAL_IP_CONTROLLER_2>
+    ```
+
+    To enable the metrics server, open `inventory/mycluster/group_vars/k8s_cluster/addons.yml` and set:
+
+    ```yaml
+    metrics_server_enabled: true
+    ```
+  </Step>
+  <Step title="Deploy the cluster">
+    Run the cluster playbook. Deployment typically takes up to 20 minutes:
+
+    ```bash
+    ansible-playbook -i inventory/mycluster/ -u $USERNAME -b -v \
+      --private-key=~/.ssh/id_rsa cluster.yml
+    ```
+  </Step>
+</Steps>
+
+## Access the cluster
+
+<Steps>
+  <Step title="Fix kubeconfig permissions on the controller">
+    SSH into `controller-0` and update the permissions on the admin kubeconfig:
+
+    ```bash
+    ssh $USERNAME@$IP_CONTROLLER_0
+    sudo chown -R $USERNAME:$USERNAME /etc/kubernetes/admin.conf
+    exit
+    ```
+  </Step>
+  <Step title="Copy the kubeconfig locally">
+    ```bash
+    scp $USERNAME@$IP_CONTROLLER_0:/etc/kubernetes/admin.conf kubespray-do.conf
+    ```
+  </Step>
+  <Step title="Update the API server address">
+    The kubeconfig file references the controller's internal IP. Open `kubespray-do.conf` and change the `server` field to the controller's external IP so you can connect from outside the VPC:
+
+    ```yaml
+    apiVersion: v1
+    clusters:
+    - cluster:
+        certificate-authority-data: XXX
+        server: https://35.205.205.80:6443
+      name: cluster.local
+    ```
+  </Step>
+  <Step title="Set KUBECONFIG and verify nodes">
+    ```bash
+    export KUBECONFIG=$PWD/kubespray-do.conf
+    kubectl get nodes
+    ```
+
+    Expected output:
+
+    ```text
+    NAME           STATUS   ROLES    AGE   VERSION
+    controller-0   Ready    master   47m   v1.17.9
+    controller-1   Ready    master   46m   v1.17.9
+    controller-2   Ready    master   46m   v1.17.9
+    worker-0       Ready    <none>   45m   v1.17.9
+    worker-1       Ready    <none>   45m   v1.17.9
+    worker-2       Ready    <none>   45m   v1.17.9
+    ```
+  </Step>
+</Steps>
+
+## Smoke tests
+
+Run these checks to confirm the cluster is functioning correctly.
+
+<AccordionGroup>
+  <Accordion title="Metrics server">
+    Verify that the metrics server add-on is running and returning node metrics:
+
+    ```bash
+    kubectl top nodes
+    ```
+
+    Expected output:
+
+    ```text
+    NAME           CPU(cores)   CPU%   MEMORY(bytes)   MEMORY%
+    controller-0   191m         10%    1956Mi          26%
+    controller-1   190m         10%    1828Mi          24%
+    controller-2   182m         10%    1839Mi          24%
+    worker-0       87m          4%     1265Mi          16%
+    worker-1       102m         5%     1268Mi          16%
+    worker-2       108m         5%     1299Mi          17%
+    ```
+
+    <Note>Metrics may not appear immediately after deployment. Wait a few minutes if the command returns no data.</Note>
+  </Accordion>
+  <Accordion title="Pod-to-pod networking">
+    Verify that pods on different nodes can reach each other. In one terminal, launch a shell pod:
+
+    ```bash
+    kubectl run myshell1 -it --rm --image busybox -- sh
+    hostname -i
+    ```
+
+    In a second terminal, launch another shell pod and ping the first:
+
+    ```bash
+    kubectl run myshell2 -it --rm --image busybox -- sh
+    ping <hostname-of-myshell1>
+    ```
+
+    Expected ping output:
+
+    ```text
+    PING 10.233.108.2 (10.233.108.2): 56 data bytes
+    64 bytes from 10.233.108.2: seq=0 ttl=62 time=2.876 ms
+    64 bytes from 10.233.108.2: seq=1 ttl=62 time=0.398 ms
+    ```
+  </Accordion>
+  <Accordion title="Deployment and port forwarding">
+    Create an nginx deployment and verify port forwarding works:
+
+    ```bash
+    kubectl create deployment nginx --image=nginx
+    kubectl get pods -l app=nginx
+    ```
+
+    Forward a local port to the nginx pod:
+
+    ```bash
+    POD_NAME=$(kubectl get pods -l app=nginx -o jsonpath="{.items[0].metadata.name}")
+    kubectl port-forward $POD_NAME 8080:80
+    ```
+
+    In a second terminal, confirm HTTP access:
+
+    ```bash
+    curl --head http://127.0.0.1:8080
+    ```
+
+    Expected output:
+
+    ```text
+    HTTP/1.1 200 OK
+    Server: nginx/1.19.1
+    ```
+  </Accordion>
+  <Accordion title="Cross-namespace DNS">
+    Create a service in a separate namespace and verify DNS resolution from the default namespace:
+
+    ```bash
+    kubectl create namespace dev
+    kubectl create deployment nginx --image=nginx -n dev
+    kubectl expose deployment nginx --port 80 --type ClusterIP -n dev
+    ```
+
+    Run a temporary curl container and reach the service by DNS name:
+
+    ```bash
+    kubectl run curly -it --rm --image curlimages/curl:7.70.0 -- /bin/sh
+    curl --head http://nginx.dev:80
+    ```
+
+    Expected output:
+
+    ```text
+    HTTP/1.1 200 OK
+    Server: nginx/1.19.1
+    ```
+
+    Type `exit` to leave the shell.
+  </Accordion>
+</AccordionGroup>
+
+## Clean up
+
+When you are done, remove the cluster and infrastructure to avoid ongoing charges.
+
+<Steps>
+  <Step title="Remove Kubernetes resources">
+    ```bash
+    kubectl delete namespace dev
+    kubectl delete deployment nginx
+    kubectl delete svc/nginx
+    ```
+  </Step>
+  <Step title="Reset the cluster (optional)">
+    If you want to keep the VMs but remove the Kubernetes installation:
+
+    ```bash
+    ansible-playbook -i inventory/mycluster/ -u $USERNAME -b -v \
+      --private-key=~/.ssh/id_rsa reset.yml
+    ```
+  </Step>
+  <Step title="Delete compute instances">
+    ```bash
+    gcloud -q compute instances delete \
+      controller-0 controller-1 controller-2 \
+      worker-0 worker-1 worker-2 \
+      --zone $(gcloud config get-value compute/zone)
+    ```
+  </Step>
+  <Step title="Delete firewall rules and network">
+    ```bash
+    gcloud -q compute firewall-rules delete \
+      kubernetes-the-kubespray-way-allow-nginx-service \
+      kubernetes-the-kubespray-way-allow-internal \
+      kubernetes-the-kubespray-way-allow-external
+
+    gcloud -q compute networks subnets delete kubernetes
+    gcloud -q compute networks delete kubernetes-the-kubespray-way
+    ```
+  </Step>
+</Steps>

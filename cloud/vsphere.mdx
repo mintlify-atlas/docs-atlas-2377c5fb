@@ -1,0 +1,129 @@
+---
+title: 'Deploying Kubespray on VMware vSphere'
+description: 'Configure the vSphere external cloud provider and CSI driver in Kubespray for persistent volumes, storage classes, and storage policy management.'
+keywords: ['kubespray', 'vsphere', 'vmware', 'cloud provider', 'csi', 'persistent volumes', 'storage classes']
+---
+
+Kubespray can deploy Kubernetes on VMware vSphere with full support for persistent volumes, storage classes, dynamic volume provisioning, and vSphere Storage Policy Based Management (SPBM). The recommended path is the out-of-tree cloud provider using the external cloud controller manager and vSphere CSI driver.
+
+## Supported capabilities
+
+- Volumes and persistent volumes backed by VMDK
+- Dynamic provisioning via storage classes
+- vSphere Storage Policy Based Management (SPBM) for Kubernetes workloads
+
+## Out-of-tree vSphere cloud provider
+
+### Prerequisites
+
+Before configuring Kubespray, prepare your vSphere environment according to the [official cloud-provider-vsphere documentation](https://github.com/kubernetes/cloud-provider-vsphere/blob/master/docs/book/tutorials/kubernetes-on-vsphere-with-kubeadm.md#prerequisites).
+
+After completing the prerequisites, verify that:
+
+- vSphere is upgraded to **6.7 U3 or later**
+- VM hardware version is **15 or higher** on every node VM
+- **Disk UUID** (hardware UUID) is enabled on each VM where Kubernetes will be deployed
+
+<Warning>
+If VM hardware version or disk UUID requirements are not met, the vSphere CSI driver will fail to attach volumes and persistent volume claims will remain in a pending state.
+</Warning>
+
+### Kubespray configuration
+
+<Steps>
+  <Step title="Enable the external cloud provider">
+    In `inventory/sample/group_vars/all/all.yml`, set the cloud provider to external and specify vsphere:
+
+    ```yaml inventory/sample/group_vars/all/all.yml
+    cloud_provider: "external"
+    external_cloud_provider: "vsphere"
+    ```
+  </Step>
+  <Step title="Configure vCenter credentials and CSI">
+    In `inventory/sample/group_vars/all/vsphere.yml`, declare your vCenter connection settings and enable the CSI driver:
+
+    ```yaml inventory/sample/group_vars/all/vsphere.yml
+    external_vsphere_vcenter_ip: "myvcenter.domain.com"
+    external_vsphere_vcenter_port: "443"
+    external_vsphere_insecure: "true"
+    external_vsphere_user: "administrator@vsphere.local"
+    external_vsphere_password: "K8s_admin"
+    external_vsphere_datacenter: "DATACENTER_name"
+    external_vsphere_kubernetes_cluster_id: "kubernetes-cluster-id"
+    vsphere_csi_enabled: true
+    ```
+  </Step>
+  <Step title="Run the cluster playbook">
+    ```bash
+    cd kubespray
+    ansible-playbook -i inventory/sample/hosts.ini -b -v cluster.yml
+    ```
+  </Step>
+</Steps>
+
+### Configuration variable reference
+
+All variables are set in `inventory/sample/group_vars/all/vsphere.yml`.
+
+| Variable | Required | Type | Default | Description |
+|----------|----------|------|---------|-------------|
+| `external_vsphere_vcenter_ip` | Yes | string | — | IP address or FQDN of the vCenter server |
+| `external_vsphere_vcenter_port` | Yes | string | `"443"` | Port for the vCenter API |
+| `external_vsphere_insecure` | Yes | string | `"true"` | Set to `"true"` if the vCenter uses a self-signed certificate |
+| `external_vsphere_user` | Yes | string | — | vCenter user with required privileges. Can also be set via the `VSPHERE_USER` environment variable |
+| `external_vsphere_password` | Yes | string | — | vCenter password. Can also be set via the `VSPHERE_PASSWORD` environment variable |
+| `external_vsphere_datacenter` | Yes | string | — | Name of the datacenter to use |
+| `external_vsphere_kubernetes_cluster_id` | Yes | string | `"kubernetes-cluster-id"` | Unique cluster identifier used to tag vSphere resources |
+| `vsphere_csi_enabled` | Yes | boolean | `false` | Enable the vSphere CSI driver |
+
+<Tip>
+You can provide `external_vsphere_user` and `external_vsphere_password` as environment variables (`VSPHERE_USER` and `VSPHERE_PASSWORD`) instead of storing them in group vars, which avoids committing credentials to version control.
+</Tip>
+
+### Fine-grained CSI configuration
+
+For advanced vSphere CSI settings — such as configuring multiple datastores, topology zones, or storage policies — refer to the dedicated vSphere CSI documentation at `/docs/CSI/vsphere-csi`.
+
+## In-tree vSphere cloud provider (deprecated)
+
+<Warning>
+The in-tree vSphere cloud provider is deprecated and has been removed in Kubernetes v1.31. Use the out-of-tree provider described above for all new deployments.
+</Warning>
+
+The in-tree provider required setting `cloud_provider: vsphere` (without the external prefix) and declaring all credentials in `group_vars/all/all.yml` directly.
+
+### Deprecated configuration variables
+
+| Variable | Required | Type | Default | Description |
+|----------|----------|------|---------|-------------|
+| `vsphere_vcenter_ip` | Yes | string | — | IP/URL of the vCenter |
+| `vsphere_vcenter_port` | Yes | integer | — | Port of the vCenter API, commonly 443 |
+| `vsphere_insecure` | Yes | integer | — | Set to `1` for self-signed certificates |
+| `vsphere_user` | Yes | string | — | vCenter username with required privileges |
+| `vsphere_password` | Yes | string | — | vCenter password |
+| `vsphere_datacenter` | Yes | string | — | Datacenter name |
+| `vsphere_datastore` | Yes | string | — | Datastore name |
+| `vsphere_working_dir` | Yes | string | — | VM folder path under the "VMs and Templates" view |
+| `vsphere_scsi_controller_type` | Yes | string | `pvscsi` | SCSI controller type: `buslogic`, `pvscsi`, or `parallel` |
+| `vsphere_vm_uuid` | No | string | — | VM instance UUID of the control plane host (only for Kubernetes ≤ 1.9.2) |
+| `vsphere_public_network` | No | string | — | Name of the network the VMs are joined to |
+| `vsphere_resource_pool` | No | string | — | Resource pool where VMs are located (Kubernetes ≥ 1.9.2) |
+| `vsphere_zone_category` | No | string | — | Tag category for `failure-domain.beta.kubernetes.io/zone` labels (Kubernetes ≥ 1.12.0) |
+| `vsphere_region_category` | No | string | — | Tag category for `failure-domain.beta.kubernetes.io/region` labels (Kubernetes ≥ 1.12.0) |
+
+### Deprecated example configuration
+
+```yaml group_vars/all/all.yml
+cloud_provider: vsphere
+
+vsphere_vcenter_ip: "myvcenter.domain.com"
+vsphere_vcenter_port: 443
+vsphere_insecure: 1
+vsphere_user: "k8s@vsphere.local"
+vsphere_password: "K8s_admin"
+vsphere_datacenter: "DATACENTER_name"
+vsphere_datastore: "DATASTORE_name"
+vsphere_working_dir: "Docker_hosts"
+vsphere_scsi_controller_type: "pvscsi"
+vsphere_resource_pool: "K8s-Pool"
+```

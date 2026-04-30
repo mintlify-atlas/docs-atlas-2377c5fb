@@ -1,0 +1,168 @@
+---
+title: "How to contribute code and patches to Kubespray repo"
+description: "Set up your dev environment, install pre-commit hooks, sign the CNCF CLA, and follow the patch submission and code review workflow."
+---
+
+Contributing to Kubespray follows a standard Kubernetes community workflow: open an issue, fork the repo, write and lint your code, then submit a pull request for review. Before your first contribution you need to set up a Python virtual environment, install pre-commit, and sign the CNCF CLA. This page walks through each step in detail.
+
+## Environment setup
+
+Kubespray's test dependencies are managed through a Python virtual environment. Install them before writing any code.
+
+```bash
+virtualenv venv
+source venv/bin/activate
+pip install -r tests/requirements.txt
+```
+
+### Pre-commit hooks
+
+Kubespray uses [pre-commit](https://pre-commit.com) to enforce code quality before every commit. The `.pre-commit-config.yaml` in the repository root configures the following hooks:
+
+<AccordionGroup>
+  <Accordion title="General file checks (pre-commit-hooks)">
+    - `check-added-large-files` — prevents accidentally committing large binary files
+    - `check-case-conflict` — catches case-insensitive filename collisions
+    - `check-executables-have-shebangs` — ensures scripts have a shebang line
+    - `check-xml` — validates XML syntax
+    - `check-merge-conflict` — detects leftover merge-conflict markers
+    - `detect-private-key` — blocks accidental private key commits
+    - `end-of-file-fixer` — ensures files end with a newline
+    - `forbid-new-submodules` — prevents adding git submodules
+    - `requirements-txt-fixer` — keeps requirements files sorted
+    - `trailing-whitespace` — strips trailing whitespace
+  </Accordion>
+
+  <Accordion title="YAML linting (yamllint v1.37.1)">
+    Runs `yamllint --strict` against all YAML files. Kubespray playbooks and inventory files must be strictly valid YAML.
+  </Accordion>
+
+  <Accordion title="Shell linting (shellcheck v0.11.0.1)">
+    Runs ShellCheck with `--severity=error` on all `.sh` files. Only error-level issues will fail the hook.
+  </Accordion>
+
+  <Accordion title="Ansible linting (ansible-lint v25.11.0)">
+    Validates all playbooks and roles against Ansible best practices. Requires `jmespath` and `netaddr` as additional dependencies.
+  </Accordion>
+
+  <Accordion title="Spell checking (misspell v0.7.0)">
+    Catches common English spelling mistakes across all text and documentation files. `OWNERS_ALIASES` is excluded.
+  </Accordion>
+
+  <Accordion title="Custom local hooks">
+    - **collection-build-install** — builds and installs the `kubernetes_sigs.kubespray` Ansible collection to verify it is valid
+    - **generate-docs-sidebar** — regenerates the documentation sidebar from current content
+    - **ci-matrix** — regenerates the CI test coverage matrix table in `docs/developers/ci.md`
+    - **check-galaxy-version** — verifies `galaxy.yml` carries a consistent version string
+    - **jinja-syntax-check** — validates all Jinja2 template files for syntax errors
+    - **propagate-ansible-variables** — updates static files that reference default Kubespray values
+    - **check-checksums-sorted** — asserts that checksum files are sorted by version
+  </Accordion>
+
+  <Accordion title="Markdown linting (markdownlint v0.12.0)">
+    Enforces consistent Markdown style. The `docs/_sidebar.md` file and `.github/` directory are excluded.
+  </Accordion>
+</AccordionGroup>
+
+Install and activate the hooks once per clone:
+
+```bash
+pre-commit install
+```
+
+To run all hooks against every file in the repository (not just staged changes):
+
+```bash
+pre-commit run -a
+```
+
+### Molecule
+
+[Molecule](https://github.com/ansible-community/molecule) tests individual Ansible roles in isolation. You can run all roles at once or focus on one while developing.
+
+<Tabs>
+  <Tab title="All roles">
+    ```bash
+    ./tests/scripts/molecule_run.sh
+    ```
+  </Tab>
+  <Tab title="Single role">
+    ```bash
+    # From inside the role directory
+    cd roles/my-role
+    molecule test
+    ```
+  </Tab>
+  <Tab title="Iterative debugging">
+    ```bash
+    cd roles/my-role
+    molecule create      # Spin up the test environment
+    molecule converge    # Apply the role
+    molecule login       # SSH into the test VM for debugging
+    ```
+  </Tab>
+</Tabs>
+
+### Vagrant
+
+For full end-to-end cluster testing without cloud infrastructure, use Vagrant with VirtualBox or libvirt. See the [Vagrant development guide](/developers/vagrant) for setup instructions.
+
+## Contributing a patch
+
+<Steps>
+  <Step title="Open an issue">
+    Submit an issue describing your proposed change to the repository. The [repo owners](https://github.com/kubernetes-sigs/kubespray/blob/master/OWNERS) will respond promptly to confirm scope and approach.
+  </Step>
+
+  <Step title="Fork and develop">
+    Fork the repository, then develop and test your code changes in your fork.
+  </Step>
+
+  <Step title="Install and run pre-commit">
+    Install pre-commit in your development clone and run it against all files:
+
+    ```bash
+    pre-commit install
+    pre-commit run -a
+    ```
+
+    Address any validation failures before continuing.
+  </Step>
+
+  <Step title="Sign the CNCF CLA">
+    Sign the Contributor License Agreement at [https://git.k8s.io/community/CLA.md](https://git.k8s.io/community/CLA.md). Pull requests from contributors who have not signed the CLA cannot be merged.
+  </Step>
+
+  <Step title="Submit a pull request">
+    Open a pull request from your fork against the target branch of the upstream repository.
+  </Step>
+
+  <Step title="Respond to review">
+    Work with the reviewers on their suggestions. Update your branch as requested.
+  </Step>
+
+  <Step title="Rebase and squash">
+    Before final merge, rebase your branch to the HEAD of the target branch and squash unnecessary commits. See [Always Squash and Rebase](https://blog.carbonfive.com/always-squash-and-rebase-your-git-commits/) for guidance.
+  </Step>
+</Steps>
+
+## GitHub notification filters
+
+Kubespray is an active repository with high notification volume. The Kubernetes community recommends setting up Gmail or client filters to manage GitHub email notifications. See the [Kubernetes community best practices guide](https://github.com/kubernetes/community/blob/master/communication/best-practices.md#examples-for-setting-filters-to-kubernetes-github-notifications) for filter examples.
+
+## Code standards summary
+
+<CardGroup cols={2}>
+  <Card title="YAML" icon="file-code">
+    All YAML files must pass `yamllint --strict`. Pay attention to indentation, quoting, and trailing spaces.
+  </Card>
+  <Card title="Shell" icon="terminal">
+    Shell scripts must pass ShellCheck at error severity. Use `#!/bin/bash` shebangs and avoid undefined variables.
+  </Card>
+  <Card title="Ansible" icon="play">
+    Playbooks and roles must pass ansible-lint. Follow role structure conventions and avoid deprecated modules.
+  </Card>
+  <Card title="Jinja2" icon="brackets-curly">
+    All `.j2` templates are syntax-checked automatically. Test templates render correctly before committing.
+  </Card>
+</CardGroup>

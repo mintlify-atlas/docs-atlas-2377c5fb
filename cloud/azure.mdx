@@ -1,0 +1,205 @@
+---
+title: 'Deploying Kubespray on Microsoft Azure'
+description: 'Configure Kubespray for Azure with service principal credentials, resource groups, vnet settings, and Azure Load Balancer options.'
+keywords: ['kubespray', 'azure', 'cloud provider', 'service principal', 'resource group', 'azure load balancer']
+---
+
+Kubespray supports deploying Kubernetes on Microsoft Azure by configuring the Azure cloud provider with service principal credentials, virtual network details, and load balancer settings. All instances must be part of a resource group and the subnet must have an attached routing table before the playbook runs.
+
+<Note>
+The in-tree Azure cloud provider (`cloud_provider: azure`) was removed in Kubernetes v1.31 (Kubespray v2.27). Use `cloud_provider: external` with `external_cloud_provider: azure` for current deployments.
+</Note>
+
+## Prerequisites
+
+- Install the [Azure CLI](https://docs.microsoft.com/en-gb/cli/azure/install-azure-cli) and run `az login` to authenticate.
+- All instances must be in an Azure resource group.
+- The subnet your instances use must have a routing table attached.
+
+## Setting Azure parameters
+
+Set all `azure_` variables in `group_vars/all/all.yml` before running the playbook. The sections below explain each parameter and how to retrieve its value.
+
+### Cloud environment
+
+```yaml group_vars/all/all.yml
+azure_cloud: AzurePublicCloud
+```
+
+Supported values: `AzurePublicCloud`, `AzureChinaCloud`, `AzureGermanCloud`, `AzureUSGovernmentCloud`. Use the appropriate value for your Azure Stack deployment. Each environment has different API endpoints that the Azure SDK must use.
+
+### Subscription and tenant IDs
+
+Run `az account show` to retrieve these values:
+
+```bash
+az account show
+```
+
+Map the output fields as follows:
+
+```yaml group_vars/all/all.yml
+azure_tenant_id: "<Tenant ID field>"
+azure_subscription_id: "<ID field>"
+```
+
+### Location and resource group
+
+```bash
+# List all regions
+az account list-locations
+
+# List resource groups
+az group list
+```
+
+```yaml group_vars/all/all.yml
+azure_location: "westeurope"
+azure_resource_group: "my-k8s-rg"
+```
+
+### VM type
+
+```yaml group_vars/all/all.yml
+azure_vmtype: "standard"   # Use "vmss" for Virtual Machine Scale Sets
+```
+
+### Virtual network settings
+
+```bash
+# List vnets
+az network vnet list
+
+# List subnets
+az network vnet subnet list --resource-group RESOURCE_GROUP --vnet-name VNET_NAME
+```
+
+```yaml group_vars/all/all.yml
+azure_vnet_name: "my-k8s-vnet"
+azure_vnet_resource_group: "my-network-rg"
+azure_subnet_name: "my-k8s-subnet"
+```
+
+### Network security group
+
+```bash
+az network nsg list
+```
+
+```yaml group_vars/all/all.yml
+azure_security_group_name: "my-k8s-nsg"
+azure_security_group_resource_group: "my-network-rg"   # defaults to azure_vnet_resource_group
+```
+
+### Route table
+
+```yaml group_vars/all/all.yml
+azure_route_table_name: "my-k8s-rt"
+azure_route_table_resource_group: "my-network-rg"   # defaults to azure_vnet_resource_group
+```
+
+## Service principal credentials
+
+Kubernetes uses an Azure AD application and service principal to call Azure APIs. Create them with the Azure CLI:
+
+<Steps>
+  <Step title="Create an Azure AD application">
+    ```bash
+    az ad app create \
+      --display-name kubernetes \
+      --identifier-uris http://kubernetes \
+      --homepage http://example.com \
+      --password CLIENT_SECRET
+    ```
+    Note the `AppId` value from the output. The display name, identifier URI, homepage, and password can be any values you choose.
+  </Step>
+  <Step title="Create a service principal">
+    ```bash
+    az ad sp create --id <AppId>
+    ```
+  </Step>
+  <Step title="Assign the Owner role">
+    ```bash
+    az role assignment create \
+      --role "Owner" \
+      --assignee http://kubernetes \
+      --subscription SUBSCRIPTION_ID
+    ```
+  </Step>
+  <Step title="Set the credentials in group_vars">
+    ```yaml group_vars/all/all.yml
+    azure_aad_client_id: "<AppId>"
+    azure_aad_client_secret: "<CLIENT_SECRET>"
+    ```
+  </Step>
+</Steps>
+
+## Load balancer configuration
+
+### SKU selection
+
+```yaml group_vars/all/all.yml
+azure_loadbalancer_sku: "standard"   # or "basic"
+```
+
+The `standard` SKU supports availability zones and larger backend pools. The `basic` SKU is simpler but has fewer features.
+
+### Excluding control plane nodes from the standard load balancer
+
+```yaml group_vars/all/all.yml
+azure_exclude_master_from_standard_lb: true
+```
+
+When set, control plane nodes are not added to the standard load balancer backend pool. This is the recommended setting for most deployments.
+
+### Disabling outbound SNAT
+
+```yaml group_vars/all/all.yml
+azure_disable_outbound_snat: true
+```
+
+Only set this when `azure_loadbalancer_sku` is `standard`. It disables outbound SNAT rules on the public load balancer, which is useful when you have separate outbound rules or a NAT gateway.
+
+### Multiple agent pools (availability sets)
+
+If you use multiple agent pools (availability sets), you must specify which availability set the load balancer backend pool uses. Without this setting the cloud provider attempts to add all nodes to a single backend pool, which Azure does not allow across availability sets:
+
+```yaml group_vars/all/all.yml
+azure_primary_availability_set_name: "my-agent-pool-as"
+```
+
+### Instance metadata service
+
+```yaml group_vars/all/all.yml
+azure_use_instance_metadata: true
+```
+
+Enables use of the Azure Instance Metadata Service wherever possible, which improves performance and reliability of node metadata lookups.
+
+## Terraform provisioning with Resource Group Templates
+
+Kubespray provides Azure Resource Group Templates and scripts under `contrib/azurerm/` to provision the required infrastructure. Refer to the `contrib/azurerm/README.md` for step-by-step usage instructions.
+
+## Complete example configuration
+
+```yaml group_vars/all/all.yml
+cloud_provider: external
+external_cloud_provider: azure
+
+azure_cloud: AzurePublicCloud
+azure_tenant_id: "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
+azure_subscription_id: "yyyyyyyy-yyyy-yyyy-yyyy-yyyyyyyyyyyy"
+azure_location: "westeurope"
+azure_resource_group: "my-k8s-rg"
+azure_vmtype: "standard"
+azure_vnet_name: "my-k8s-vnet"
+azure_vnet_resource_group: "my-network-rg"
+azure_subnet_name: "my-k8s-subnet"
+azure_security_group_name: "my-k8s-nsg"
+azure_route_table_name: "my-k8s-rt"
+azure_aad_client_id: "zzzzzzzz-zzzz-zzzz-zzzz-zzzzzzzzzzzz"
+azure_aad_client_secret: "my-client-secret"
+azure_loadbalancer_sku: "standard"
+azure_exclude_master_from_standard_lb: true
+azure_use_instance_metadata: true
+```

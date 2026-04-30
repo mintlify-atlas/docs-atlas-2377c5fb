@@ -1,0 +1,187 @@
+---
+title: 'Hardening Kubernetes Clusters Against CIS Benchmarks'
+description: 'Apply CIS Benchmark hardening to Kubespray clusters: admission plugins, TLS settings, encryption at rest, kubelet security, and kube-bench validation.'
+keywords: ['hardening', 'CIS benchmark', 'security', 'admission plugins', 'encryption at rest', 'TLS', 'kube-bench', 'PodSecurity']
+---
+
+Kubespray supports CIS Benchmark-compliant cluster hardening through a set of Ansible variables that tighten kube-apiserver, kubelet, etcd, and controller configuration. You apply these settings by creating a `hardening.yaml` file and passing it as extra vars when running the cluster playbook.
+
+## Minimum requirements
+
+The Kubernetes version must be at least `v1.23.6` to have access to all the security features referenced in this guide, including the `PodSecurity` admission plugin.
+
+<Note>
+  Ensure you are running the latest Kubespray version before applying these settings, and verify that no other inventory files override the hardening variables.
+</Note>
+
+## Full hardening configuration
+
+Create a file named `hardening.yaml` with the following content. Each section is explained below.
+
+```yaml
+# Hardening
+---
+
+## kube-apiserver
+authorization_modes: ['Node', 'RBAC']
+kube_apiserver_request_timeout: 120s
+kube_apiserver_service_account_lookup: true
+
+# enable kubernetes audit
+kubernetes_audit: true
+audit_log_path: "/var/log/kube-apiserver-log.json"
+audit_log_maxage: 30
+audit_log_maxbackups: 10
+audit_log_maxsize: 100
+
+tls_min_version: VersionTLS12
+tls_cipher_suites:
+  - TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256
+  - TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256
+  - TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305
+
+# enable encryption at rest
+kube_encrypt_secret_data: true
+kube_encryption_resources: [secrets]
+kube_encryption_algorithm: "secretbox"
+
+kube_apiserver_enable_admission_plugins:
+  - EventRateLimit
+  - AlwaysPullImages
+  - ServiceAccount
+  - NamespaceLifecycle
+  - NodeRestriction
+  - LimitRanger
+  - ResourceQuota
+  - MutatingAdmissionWebhook
+  - ValidatingAdmissionWebhook
+  - PodNodeSelector
+  - PodSecurity
+kube_apiserver_admission_control_config_file: true
+# Creates config file for PodNodeSelector
+# kube_apiserver_admission_plugins_needs_configuration: [PodNodeSelector]
+# Define the default node selector, by default all the workloads will be scheduled on nodes
+# with label network=srv1
+# kube_apiserver_admission_plugins_podnodeselector_default_node_selector: "network=srv1"
+# EventRateLimit plugin configuration
+kube_apiserver_admission_event_rate_limits:
+  limit_1:
+    type: Namespace
+    qps: 50
+    burst: 100
+    cache_size: 2000
+  limit_2:
+    type: User
+    qps: 50
+    burst: 100
+kube_profiling: false
+# Remove anonymous access to cluster
+remove_anonymous_access: true
+
+## kube-controller-manager
+kube_controller_manager_bind_address: 127.0.0.1
+kube_controller_terminated_pod_gc_threshold: 50
+kube_controller_feature_gates: ["RotateKubeletServerCertificate=true"]
+
+## kube-scheduler
+kube_scheduler_bind_address: 127.0.0.1
+
+## etcd
+# Running etcd (on dedicated hosts) outside the Kubernetes cluster is the most secure deployment option,
+# as it isolates etcd from the cluster's CNI network and removes direct pod-level attack vectors.
+# This approach prevents RBAC misconfigurations that potentially compromise etcd,
+# creating an additional security boundary that protects the cluster's critical state store.
+etcd_deployment_type: host
+
+## kubelet
+kubelet_authorization_mode_webhook: true
+kubelet_authentication_token_webhook: true
+kube_read_only_port: 0
+kubelet_rotate_server_certificates: true
+kubelet_protect_kernel_defaults: true
+kubelet_event_record_qps: 1
+kubelet_rotate_certificates: true
+kubelet_streaming_connection_idle_timeout: "5m"
+kubelet_make_iptables_util_chains: true
+kubelet_feature_gates: ["RotateKubeletServerCertificate=true"]
+kubelet_seccomp_default: true
+kubelet_systemd_hardening: true
+# In case you have multiple interfaces in your
+# control plane nodes and you want to specify the right
+# IP addresses, kubelet_secure_addresses allows you
+# to specify the IP from which the kubelet
+# will receive the packets.
+kubelet_secure_addresses: "localhost link-local {{ kube_pods_subnet }} 192.168.10.110 192.168.10.111 192.168.10.112"
+
+# additional configurations
+kube_owner: root
+kube_cert_group: root
+
+# create a default Pod Security Configuration and deny running of insecure pods
+# kube_system namespace is exempted by default
+kube_pod_security_use_default: true
+kube_pod_security_default_enforce: restricted
+```
+
+## What each section does
+
+<AccordionGroup>
+  <Accordion title="Authorization and anonymous access">
+    `authorization_modes: ['Node', 'RBAC']` enables Node and RBAC authorization on the apiserver. The `anonymous-auth` flag is `true` by default, which is safe in combination with RBAC authorization. Setting `remove_anonymous_access: true` removes the anonymous user binding from the cluster.
+  </Accordion>
+  <Accordion title="Admission plugins">
+    The `kube_apiserver_enable_admission_plugins` list activates several important plugins:
+
+    - **PodSecurity** — enforces Pod Security Standards (replaces PodSecurityPolicy). See the [Kubernetes docs](https://kubernetes.io/docs/concepts/security/pod-security-admission/) for details.
+    - **EventRateLimit** — rate-limits API server event requests per namespace and per user. Configuration files are automatically created and mounted inside the kube-apiserver container by Kubespray.
+    - **AlwaysPullImages** — forces image pulls on every pod start, preventing cached image reuse across namespaces.
+    - **NodeRestriction** — limits what the kubelet on each node can modify in the API.
+
+    Setting `kube_apiserver_admission_control_config_file: true` generates the necessary configuration file for plugins that require it.
+  </Accordion>
+  <Accordion title="TLS settings">
+    `tls_min_version: VersionTLS12` disables TLS 1.0 and TLS 1.1. The `tls_cipher_suites` list restricts negotiation to three modern, forward-secret cipher suites using ECDHE key exchange.
+  </Accordion>
+  <Accordion title="Encryption at rest">
+    `kube_encrypt_secret_data: true` enables the encryption provider on the apiserver. Data is encrypted using the `secretbox` algorithm before it is written to etcd, making stored secrets unreadable even if an attacker gains direct etcd access. The resources encrypted are controlled by `kube_encryption_resources`.
+  </Accordion>
+  <Accordion title="Kubelet hardening">
+    - `kubelet_rotate_certificates: true` and `kubelet_rotate_server_certificates: true` enable automatic certificate rotation via `serverTLSBootstrap`. CSRs are approved automatically by [kubelet-csr-approver](https://github.com/postfinance/kubelet-csr-approver). Customize approval via `kubelet_csr_approver_values`.
+    - `kube_read_only_port: 0` disables the unauthenticated kubelet read-only port.
+    - `kubelet_protect_kernel_defaults: true` prevents the kubelet from modifying kernel tunable defaults.
+    - `kubelet_systemd_hardening: true` combined with `kubelet_secure_addresses` sets up a minimal systemd-level firewall on each node. Specify the IPs from which the kubelet should accept packets when your control plane nodes have multiple network interfaces.
+    - `kubelet_seccomp_default: true` enables the default seccomp profile for all pods.
+  </Accordion>
+  <Accordion title="etcd isolation">
+    `etcd_deployment_type: host` runs etcd as a systemd service on dedicated hosts, outside the Kubernetes CNI network. This removes direct pod-level attack vectors and creates a security boundary between the cluster and its critical state store.
+  </Accordion>
+  <Accordion title="Pod Security enforcement">
+    `kube_pod_security_use_default: true` and `kube_pod_security_default_enforce: restricted` create a default Pod Security Configuration that denies running insecure pods cluster-wide. The `kube-system` namespace is exempted by default.
+  </Accordion>
+  <Accordion title="Controller and scheduler binding">
+    Both `kube_controller_manager_bind_address` and `kube_scheduler_bind_address` are set to `127.0.0.1`, which prevents these components from being directly reachable over the network. `kube_profiling: false` disables the profiling endpoint on the apiserver.
+  </Accordion>
+</AccordionGroup>
+
+## Applying the hardening configuration
+
+Run the Ansible playbook passing your standard cluster variables and the hardening file:
+
+```bash
+ansible-playbook -v cluster.yml \
+  -i inventory.ini \
+  -b --become-user=root \
+  --private-key ~/.ssh/id_ecdsa \
+  -e "@vars.yaml" \
+  -e "@hardening.yaml"
+```
+
+`vars.yaml` contains your general cluster configuration (SANs, load balancer addresses, DNS settings, etc.), and `hardening.yaml` is the file described above.
+
+## Validating with kube-bench
+
+After deploying a hardened cluster, use [kube-bench](https://github.com/aquasecurity/kube-bench) to verify compliance against the CIS Kubernetes Benchmark. kube-bench checks the configuration of the apiserver, controller manager, scheduler, etcd, and kubelet against the benchmark controls and produces a report of passed, failed, and warning checks.
+
+<Note>
+  Not all CIS Benchmark controls can be automated through Kubespray variables. Review the kube-bench output and address any remaining findings manually or through additional Ansible customisation.
+</Note>

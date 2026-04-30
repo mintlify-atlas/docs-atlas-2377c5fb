@@ -1,24 +1,11 @@
 {
-  "$schema": "https://mintlify.com/docs.json",
-  "name": "Kubespray",
+  "projectType": "infrastructure",
+  "projectName": "Kubespray",
+  "projectDescription": "An Ansible-based toolkit for deploying production-ready, highly available Kubernetes clusters on any cloud or bare metal.",
   "theme": "aspen",
-  "colors": {
-    "primary": "#242b2c",
-    "light": "#6a6a6d",
-    "dark": "#ebeaea"
-  },
-  "favicon": "https://media.brand.dev/bbb21190-6987-4c67-9b0d-d149e82e27b6.png",
-  "navbar": {
-    "primary": {
-      "type": "github",
-      "href": "https://github.com/kubernetes-sigs/kubespray"
-    }
-  },
-  "footer": {
-    "socials": {
-      "github": "https://github.com/kubernetes-sigs/kubespray"
-    }
-  },
+  "primaryColor": "#242b2c",
+  "lightColor": "#6a6a6d",
+  "darkColor": "#ebeaea",
   "navigation": {
     "tabs": [
       {
@@ -94,5 +81,30 @@
         ]
       }
     ]
-  }
+  },
+  "keyFeatures": [
+    "Deploy highly available Kubernetes clusters with Ansible playbooks",
+    "Support for multiple cloud providers: AWS, Azure, GCE, OpenStack, vSphere, Equinix Metal",
+    "Bare metal and on-premises cluster deployment",
+    "Pluggable CNI network plugins: Calico, Cilium, Flannel, Kube-OVN, and more",
+    "Multiple container runtimes: containerd, CRI-O, Docker",
+    "Air-gapped / offline installation support",
+    "Cluster upgrade automation with graceful rolling upgrades",
+    "CIS benchmark hardening support",
+    "High availability control plane with etcd clustering",
+    "Broad Linux distribution support: Debian, Ubuntu, RHEL, Fedora, openSUSE, and more"
+  ],
+  "publicApiSurface": [
+    "cluster.yml — Deploy a new Kubernetes cluster",
+    "scale.yml — Add nodes to an existing cluster",
+    "upgrade-cluster.yml — Upgrade Kubernetes version",
+    "remove-node.yml — Drain and remove nodes",
+    "reset.yml — Reset/tear down a cluster",
+    "recover-control-plane.yml — Recover a failed control plane",
+    "extra_playbooks/ — Optional addon playbooks",
+    "inventory/sample/ — Sample inventory template",
+    "kube_network_plugin variable — Select CNI plugin (calico, cilium, flannel, etc.)",
+    "kube_version variable — Pin Kubernetes version",
+    "container_manager variable — Select container runtime (containerd, cri-o, docker)"
+  ]
 }

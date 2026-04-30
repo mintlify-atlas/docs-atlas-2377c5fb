@@ -1,0 +1,165 @@
+---
+title: 'Deploying Kubespray on Amazon Web Services'
+description: 'Configure Kubespray for AWS: IAM role requirements, VPC resource tagging, static and dynamic inventory, ELB integration, and cloud provider variables.'
+keywords: ['kubespray', 'aws', 'amazon web services', 'IAM', 'VPC', 'ELB', 'cloud provider']
+---
+
+Kubespray supports deploying Kubernetes on Amazon Web Services by coordinating IAM permissions, VPC resource tagging, and Ansible inventory so the cluster can manage AWS-native resources such as Elastic Load Balancers and EBS volumes.
+
+<Note>
+The in-tree AWS cloud provider (`cloud_provider: aws`) was removed in Kubernetes v1.31 (Kubespray v2.27). Use `cloud_provider: external` with `external_cloud_provider: aws` for current deployments.
+</Note>
+
+## Prerequisites
+
+Before running the Kubespray playbook you must complete three preparation steps: create IAM roles, tag your VPC resources, and ensure correct DNS configuration.
+
+### IAM roles and policies
+
+Create IAM roles and attach policies for both your control plane nodes and worker nodes before launching instances. Kubespray provides ready-made policy documents in `contrib/aws_iam/`.
+
+- **kubernetes-master** — Attach to control plane instances. Grants permissions to describe and modify EC2 resources, ELB resources, and Route 53 records needed by the cloud controller.
+- **kubernetes-node** — Attach to worker instances. Grants the narrower set of permissions required for node registration and volume attachment.
+
+Nodes used exclusively for etcd do not require an IAM role.
+
+<Warning>
+If IAM roles are not attached to instances before the playbook runs, node registration and load balancer provisioning will fail silently. Verify role attachment before proceeding.
+</Warning>
+
+### VPC and subnet tagging
+
+The AWS cloud controller discovers resources by tag. Apply the following tags to your subnets, route tables, and all instances Kubernetes will run on:
+
+| Tag key | Tag value | Apply to |
+|---------|-----------|----------|
+| `kubernetes.io/cluster/<cluster_name>` | (any value) | All instances, subnets, route tables |
+| `kubernetes.io/role/elb` | `1` | Subnets for public-facing ELBs |
+| `kubernetes.io/role/internal-elb` | `1` | Subnets for internal ELBs |
+
+`<cluster_name>` must be a unique identifier for the cluster across your AWS account.
+
+### VPC DNS settings
+
+Your VPC must have both **DNS Hostnames** and **Private DNS** enabled. Without these settings, nodes cannot resolve internal AWS hostnames and cluster communication will break.
+
+## Inventory configuration
+
+Hostnames in your inventory file must match the internal AWS hostnames assigned to your instances. These typically look like `ip-111-222-333-444.us-west-2.compute.internal`. Use `ansible_ssh_host` and `ansible_ssh_user` to specify the connection details:
+
+```ini inventory/hosts.ini
+[kube_control_plane]
+ip-172-31-3-10.us-east-2.compute.internal ansible_ssh_host=172.31.3.10 ansible_ssh_user=ubuntu
+
+[kube_node]
+ip-172-31-8-20.us-east-2.compute.internal ansible_ssh_host=172.31.8.20 ansible_ssh_user=ubuntu
+
+[etcd]
+ip-172-31-3-10.us-east-2.compute.internal
+
+[k8s_cluster:children]
+kube_control_plane
+kube_node
+```
+
+### Dynamic inventory
+
+Kubespray ships a dynamic inventory script at `contrib/aws_inventory/kubespray-aws-inventory.py`. Copy it to your `inventory/` directory and use it in place of a static file.
+
+<Steps>
+  <Step title="Tag instances with Kubespray roles">
+    Add a tag to each EC2 instance with key `kubespray-role` and a value of `kube_control_plane`, `etcd`, or `kube_node`. Shared roles are expressed as a comma-separated value, for example `kube_control_plane, etcd`.
+  </Step>
+  <Step title="Export AWS credentials">
+    Set your credentials and region as environment variables:
+
+    ```bash
+    export AWS_ACCESS_KEY_ID="xxxxx"
+    export AWS_SECRET_ACCESS_KEY="yyyyy"
+    export AWS_REGION="us-east-2"
+    ```
+  </Step>
+  <Step title="Run the playbook with the dynamic inventory script">
+    Pass the script as the inventory source. For public-facing instances, set `VPC_VISIBILITY` to expose public IPs and DNS names:
+
+    ```bash
+    VPC_VISIBILITY="public" ansible-playbook \
+      -i inventory/kubespray-aws-inventory.py \
+      -b cluster.yml
+    ```
+  </Step>
+</Steps>
+
+The dynamic inventory produces a structure like this, which Ansible then consumes:
+
+```json
+{
+  "_meta": {
+    "hostvars": {
+      "ip-172-31-3-xxx.us-east-2.compute.internal": {
+        "ansible_ssh_host": "172.31.3.xxx"
+      },
+      "ip-172-31-8-xxx.us-east-2.compute.internal": {
+        "ansible_ssh_host": "172.31.8.xxx"
+      }
+    }
+  },
+  "etcd": [
+    "ip-172-31-3-xxx.us-east-2.compute.internal"
+  ],
+  "k8s_cluster": {
+    "children": [
+      "kube_control_plane",
+      "kube_node"
+    ]
+  },
+  "kube_control_plane": [
+    "ip-172-31-3-xxx.us-east-2.compute.internal"
+  ],
+  "kube_node": [
+    "ip-172-31-8-xxx.us-east-2.compute.internal"
+  ]
+}
+```
+
+### Node labels and taints via instance tags
+
+You can apply Kubernetes node labels and taints directly from EC2 instance tags, avoiding the need to modify inventory files:
+
+| Purpose | Tag key | Example tag value |
+|---------|---------|-------------------|
+| Node label | `kubespray-node-labels` | `node-role.kubernetes.io/ingress=` |
+| Node taint | `kubespray-node-taints` | `node-role.kubernetes.io/ingress=:NoSchedule` |
+
+## Kubespray configuration variables
+
+Declare cloud config variables in `group_vars/all/all.yml`. All variables are optional and depend on your VPC topology.
+
+| Variable | Type | Description |
+|----------|------|-------------|
+| `aws_zone` | string | Force a specific AWS availability zone. Leave blank to auto-detect. |
+| `aws_vpc` | string | Allows control plane components to run in a separate AWS account or on-premises. If set, `aws_kubernetes_cluster_tag` must also be provided. |
+| `aws_subnet_id` | string | Specific subnet ID to use for ELB provisioning. |
+| `aws_route_table_id` | string | Specific route table ID to use. |
+| `aws_role_arn` | string | IAM role ARN to assume when calling AWS APIs. |
+| `aws_kubernetes_cluster_tag` | string | Legacy cluster identifier used to tag cloud resources. |
+| `aws_kubernetes_cluster_id` | string | Current cluster identifier used to tag cloud resources. |
+| `aws_disable_security_group_ingress` | bool | Disables automatic inbound rules per load balancer on node security groups. Required when you have more than ~50 LoadBalancer Services (AWS limit is 50 rules per security group). |
+| `aws_elb_security_group` | string | Reuse a single security group for all ELBs instead of creating one per ELB. Helps avoid the 500-security-group hard limit on large clusters. |
+| `aws_disable_strict_zone_check` | bool | Skips region validation against the known AWS region list. Useful for Eucalyptus or other AWS-compatible environments. |
+
+<Tip>
+On large clusters with many `LoadBalancer`-type Services, set both `aws_disable_security_group_ingress: true` and `aws_elb_security_group` to a pre-created shared security group to avoid hitting AWS quota limits.
+</Tip>
+
+## Terraform provisioning
+
+The `contrib/terraform/aws/` directory contains a Terraform configuration that creates the full set of AWS resources required by Kubespray — VPC, subnets, route tables, security groups, IAM roles, and EC2 instances — and outputs a compatible Ansible inventory. Copy `terraform.tfvars.example` to `terraform.tfvars`, fill in your values, and run:
+
+```bash
+cd contrib/terraform/aws
+terraform init
+terraform apply -var-file=credentials.tfvars
+```
+
+After `terraform apply` completes, the generated inventory in `sample-inventory/` is ready to pass to `ansible-playbook`.

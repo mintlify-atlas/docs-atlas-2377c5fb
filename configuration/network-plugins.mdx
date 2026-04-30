@@ -1,0 +1,442 @@
+---
+title: "Network Plugins (CNI) Configuration in Kubespray"
+description: "Configure CNI network plugins in Kubespray: Calico, Cilium, Flannel, Kube-OVN, Kube-router, and Multus. Set kube_network_plugin and per-plugin options."
+keywords: ["kubespray", "CNI", "calico", "cilium", "flannel", "kube-ovn", "kube-router", "multus", "kube_network_plugin"]
+---
+
+Kubespray supports several Container Network Interface (CNI) plugins for providing pod networking. The plugin is selected with the `kube_network_plugin` variable, and each plugin has its own group_vars file for additional configuration. Calico is the default and is suitable for most production deployments, but Cilium, Flannel, Kube-OVN, and Kube-router are all fully supported.
+
+## Selecting a network plugin
+
+Set `kube_network_plugin` in `group_vars/k8s_cluster/k8s-cluster.yml` before running the cluster deployment playbook:
+
+```yaml
+# group_vars/k8s_cluster/k8s-cluster.yml
+
+# Supported values: calico, cilium, flannel, kube-ovn, kube-router, cni
+kube_network_plugin: calico
+```
+
+<Note>
+  The `cni` value installs only the CNI binaries without configuring a specific plugin. Use it when you want to manage the CNI configuration entirely outside of Kubespray, for example with a custom routing setup.
+</Note>
+
+## Plugin overview
+
+<CardGroup cols={2}>
+  <Card title="Calico" icon="shield-halved">
+    Default plugin. L3 BGP networking with optional VXLAN or IP-in-IP encapsulation. Supports network policy, eBPF dataplane, and Wireguard encryption.
+  </Card>
+  <Card title="Cilium" icon="bolt">
+    eBPF-based networking and security. Supports kube-proxy replacement, Hubble observability, transparent encryption, and advanced load balancing.
+  </Card>
+  <Card title="Flannel" icon="network-wired">
+    Simple overlay networking using VXLAN, host-gw, or Wireguard backends. Low operational overhead, no network policy support built in.
+  </Card>
+  <Card title="Kube-OVN" icon="building">
+    OVN-based network virtualization for enterprises. Supports subnets, QoS, and advanced network features via the OVS/OVN stack.
+  </Card>
+  <Card title="Kube-router" icon="route">
+    L3 CNI provider using BGP for pod routing between nodes. Integrates IPVS-based service proxy and network policy enforcement.
+  </Card>
+  <Card title="Multus" icon="layer-group">
+    Meta-plugin that enables multiple network interfaces per pod. Requires a primary CNI plugin alongside it.
+  </Card>
+</CardGroup>
+
+## Per-plugin configuration
+
+<Tabs>
+  <Tab title="Calico">
+    Calico configuration lives in `group_vars/k8s_cluster/k8s-net-calico.yml`. The defaults use VXLAN encapsulation with the Kubernetes API datastore.
+
+    ### Encapsulation mode
+
+    Calico supports VXLAN (default since Kubespray 2.19), IP-in-IP, and BGP no-encapsulation modes. These modes are mutually exclusive.
+
+    ```yaml
+    # Default: VXLAN encapsulation
+    calico_vxlan_mode: 'Always'   # 'Always', 'CrossSubnet', or 'Never'
+    calico_ipip_mode: 'Never'
+    calico_network_backend: 'vxlan'
+    ```
+
+    ```yaml
+    # IP-in-IP mode (requires bird backend)
+    calico_ipip_mode: 'Always'
+    calico_vxlan_mode: 'Never'
+    calico_network_backend: 'bird'
+    ```
+
+    ```yaml
+    # BGP no-encapsulation (requires bird backend)
+    calico_ipip_mode: 'Never'
+    calico_vxlan_mode: 'Never'
+    calico_network_backend: 'bird'
+    ```
+
+    ### Datastore
+
+    ```yaml
+    # 'kdd' (Kubernetes API datastore, default) or 'etcd'
+    calico_datastore: kdd
+    ```
+
+    Use `etcd` datastore for hybrid (non-Kubernetes) workloads. For clusters larger than 50 nodes using `kdd`, consider enabling the Typha daemon to reduce API server load.
+
+    ### IP pool CIDRs
+
+    By default Calico uses `kube_pods_subnet` for the default IP pool. Override it explicitly if you need multiple pools:
+
+    ```yaml
+    calico_pool_cidr: 10.233.64.0/20
+    calico_pool_cidr_ipv6: fd85:ee78:d8a6:8607::1:0000/112
+    ```
+
+    ### BGP peering with border routers
+
+    To route pod subnets to border routers without NAT:
+
+    ```yaml
+    peer_with_router: true
+    nat_outgoing: false
+    ```
+
+    Add `local_as` as a host variable in your inventory:
+
+    ```ini
+    node1 ansible_host=95.54.0.12 local_as=65001
+    ```
+
+    ### eBPF dataplane
+
+    Calico's eBPF dataplane bypasses kube-proxy entirely. Remove kube-proxy from the cluster before enabling this mode:
+
+    ```yaml
+    calico_bpf_enabled: true
+    ```
+
+    <Warning>
+      The `kernel-kvm` kernel package on Ubuntu is missing `CONFIG_NET_SCHED`, which is required for Calico eBPF. Use the `-generic` kernel on Ubuntu when enabling eBPF.
+    </Warning>
+
+    ### Wireguard encryption
+
+    ```yaml
+    calico_wireguard_enabled: true
+    ```
+
+    On CentOS 8, AlmaLinux 8, Rocky Linux 8, and Amazon Linux 2, enable EPEL to provide the wireguard kernel tools:
+
+    ```yaml
+    epel_enabled: true
+    ```
+
+    ### MTU
+
+    Calico calculates MTU automatically. Override `calico_veth_mtu` only if you need a specific value:
+
+    ```yaml
+    # Wireguard: MTU - 60
+    calico_veth_mtu: 1440
+    # VXLAN or BPF: MTU - 50
+    # calico_veth_mtu: 1450
+    # IP-in-IP: MTU - 20
+    # calico_veth_mtu: 1480
+    ```
+
+    ### BGP route reflectors
+
+    For large clusters, disable full node-to-node BGP mesh and use route reflectors. Add nodes to the `calico_rr` group in your inventory:
+
+    ```ini
+    [calico_rr]
+    rr0
+    rr1
+
+    [rack0]
+    rr0
+    rr1
+    node2
+    node3
+
+    [rack0:vars]
+    cluster_id="1.0.0.1"
+    calico_rr_id=rr1
+    ```
+  </Tab>
+  <Tab title="Cilium">
+    Cilium configuration lives in `group_vars/k8s_cluster/k8s-net-cilium.yml`.
+
+    ### Version
+
+    ```yaml
+    cilium_version: "1.19.3"
+    ```
+
+    ### IPAM
+
+    ```yaml
+    # 'cluster-pool' (default) or 'kubernetes'
+    cilium_ipam_mode: cluster-pool
+
+    # Pod CIDR (defaults to kube_pods_subnet if not set)
+    cilium_pool_cidr: 10.233.64.0/18
+
+    # Per-node prefix size (defaults to kube_network_node_prefix if not set)
+    cilium_pool_mask_size: "24"
+    ```
+
+    ### Kube-proxy replacement
+
+    Cilium can replace kube-proxy entirely. When doing so, it needs to reach the API server address directly:
+
+    ```yaml
+    # Cilium v1.16+
+    cilium_kube_proxy_replacement: "true"
+    # Cilium < v1.16
+    # cilium_kube_proxy_replacement: "strict"
+    ```
+
+    <Note>
+      Cilium kube-proxy replacement only works with the localhost apiserver load balancer when it uses the same port as the kube-apiserver (6443 by default).
+    </Note>
+
+    ### Transparent encryption
+
+    Cilium supports IPsec and Wireguard encryption for pod-to-pod traffic:
+
+    ```yaml
+    # IPsec
+    cilium_encryption_enabled: true
+    cilium_encryption_type: "ipsec"
+    # Generate the key:
+    # echo "3 rfc4106(gcm(aes)) $(dd if=/dev/urandom count=20 bs=1 2>/dev/null | xxd -p -c 64) 128"
+    cilium_ipsec_key: "<base64-encoded-key>"
+    ```
+
+    ```yaml
+    # Wireguard (requires Linux 5.6+)
+    cilium_encryption_enabled: true
+    cilium_encryption_type: "wireguard"
+    ```
+
+    ### Hubble observability
+
+    ```yaml
+    cilium_enable_hubble: true
+    cilium_hubble_install: true        # installs hubble-relay and hubble-ui
+    cilium_hubble_tls_generate: true   # generates TLS certificates for Hubble
+
+    cilium_enable_hubble_metrics: true
+    cilium_hubble_metrics:
+      - dns
+      - drop
+      - tcp
+      - flow
+      - icmp
+      - http
+    ```
+
+    ### Host firewall
+
+    ```yaml
+    cilium_enable_host_firewall: true
+    ```
+
+    <Warning>
+      The host firewall is disabled by default because it can break cluster connectivity if misconfigured. Enable it only after validating your host policies with `cilium_policy_audit_mode: true`.
+    </Warning>
+
+    ### Unprivileged agent
+
+    Cilium installs with `securityContext.privileged: false` by default. Set `kube_owner` to `root` in your inventory when using this mode:
+
+    ```yaml
+    kube_owner: root
+    ```
+
+    ### Rolling restart timeouts
+
+    For large clusters, increase the rolling restart timeouts to allow enough time for Cilium pods to complete BPF compilation:
+
+    ```yaml
+    cilium_rolling_restart_wait_retries_count: 30
+    cilium_rolling_restart_wait_retries_delay_seconds: 10
+    ```
+
+    The total allowed time is `count * delay` seconds. Set it to at least `(number_of_nodes * cilium_pod_start_time)`.
+  </Tab>
+  <Tab title="Flannel">
+    Flannel configuration lives in `group_vars/k8s_cluster/k8s-net-flannel.yml`.
+
+    ### Backend selection
+
+    Flannel supports three backends:
+
+    ```yaml
+    # Supported backends: vxlan (default), host-gw, wireguard
+    flannel_backend_type: vxlan
+    ```
+
+    The `host-gw` backend requires L2 adjacency between all nodes (no routers between them). The `vxlan` backend works across routed networks.
+
+    <Warning>
+      There is a known bug with the VXLAN backend. The workaround is to disable RX/TX checksum offloading on the flannel interface: `ethtool --offload flannel.1 rx off tx off`.
+    </Warning>
+
+    ### Verifying the installation
+
+    After deployment, confirm Flannel is running by checking the subnet configuration file and network interface:
+
+    ```bash
+    cat /run/flannel/subnet.env
+    # FLANNEL_NETWORK=10.233.0.0/18
+    # FLANNEL_SUBNET=10.233.16.1/24
+    # FLANNEL_MTU=1450
+    # FLANNEL_IPMASQ=false
+    ```
+
+    ```bash
+    ip a show dev flannel.1
+    ```
+  </Tab>
+  <Tab title="Kube-OVN">
+    Enable Kube-OVN in `group_vars/k8s_cluster/k8s-cluster.yml`:
+
+    ```yaml
+    kube_network_plugin: kube-ovn
+    ```
+
+    Additional configuration lives in `group_vars/k8s_cluster/k8s-net-kube-ovn.yml`.
+
+    <Warning>
+      Kube-OVN requires a kernel version other than `3.10.0-862`. If you are running that exact kernel, OVN will refuse to start with a message about a NAT-related bug. Upgrade to a version greater than `3.10.0-898`.
+    </Warning>
+
+    ### Verifying the installation
+
+    Kube-OVN runs in the `kube-ovn` namespace:
+
+    ```bash
+    kubectl get pod -n kube-ovn
+    ```
+
+    Check the default and node subnets:
+
+    ```bash
+    kubectl get subnet
+    # NAME          PROTOCOL   CIDR            PRIVATE   NAT
+    # join          IPv4       100.64.0.0/16   false     false
+    # ovn-default   IPv4       10.16.0.0/16    false     true
+    ```
+  </Tab>
+  <Tab title="Kube-router">
+    Enable Kube-router by setting `kube_network_plugin` in `group_vars/k8s_cluster/k8s-cluster.yml`:
+
+    ```yaml
+    kube_network_plugin: kube-router
+    ```
+
+    Kube-router is a pure L3 CNI provider that uses BGP to distribute pod routes between nodes. It also integrates an IPVS-based service proxy and network policy enforcement.
+
+    ### Configuration variables
+
+    Override `kube_router_...` variables (from `roles/network_plugin/kube-router/defaults/main.yml`) to customize behavior. Variable names follow kube-router's CLI option naming.
+
+    ### BGP annotations
+
+    BGP per-node peering is configured via Kubernetes annotations. Set annotations using these inventory variables:
+
+    ```yaml
+    kube_router_annotations_master: []
+    kube_router_annotations_node: []
+    kube_router_annotations_all: []
+    ```
+
+    ### Verifying the installation
+
+    Kube-router runs as a DaemonSet in `kube-system`:
+
+    ```bash
+    kubectl get pod --namespace=kube-system -l k8s-app=kube-router -owide
+    ```
+
+    Check BGP peer state:
+
+    ```bash
+    kubectl logs --namespace=kube-system -l k8s-app=kube-router | grep Peer.Up
+    ```
+  </Tab>
+</Tabs>
+
+## Multus: multiple network interfaces
+
+Multus is a meta-plugin that enables pods to have more than one network interface. It delegates primary networking to a standard CNI plugin and secondary networking to any CNI plugin you configure via `NetworkAttachmentDefinition` CRDs.
+
+### Enabling Multus
+
+Set both `kube_network_plugin` and `kube_network_plugin_multus`:
+
+```yaml
+kube_network_plugin: calico
+kube_network_plugin_multus: true
+```
+
+When using Cilium as the primary CNI, set `cilium_cni_exclusive` to `false` to prevent Cilium from overwriting the Multus configuration:
+
+```yaml
+kube_network_plugin: cilium
+kube_network_plugin_multus: true
+cilium_cni_exclusive: false
+```
+
+To restrict `NetworkAttachmentDefinition` access to the pod's own namespace:
+
+```yaml
+multus_namespace_isolation: true
+```
+
+### Creating additional networks
+
+After Multus is installed, define secondary networks as `NetworkAttachmentDefinition` objects. This example configures a macvlan interface:
+
+```yaml
+apiVersion: "k8s.cni.cncf.io/v1"
+kind: NetworkAttachmentDefinition
+metadata:
+  name: macvlan-conf
+spec:
+  config: '{
+      "cniVersion": "0.4.0",
+      "type": "macvlan",
+      "master": "eth0",
+      "mode": "bridge",
+      "ipam": {
+        "type": "host-local",
+        "subnet": "192.168.1.0/24",
+        "rangeStart": "192.168.1.200",
+        "rangeEnd": "192.168.1.216",
+        "routes": [
+          { "dst": "0.0.0.0/0" }
+        ],
+        "gateway": "192.168.1.1"
+      }
+    }'
+```
+
+Attach secondary interfaces to a pod using the `k8s.v1.cni.cncf.io/networks` annotation:
+
+```yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: samplepod
+  annotations:
+    k8s.v1.cni.cncf.io/networks: macvlan-conf
+spec:
+  containers:
+    - name: samplepod
+      command: ["/bin/bash", "-c", "sleep 2000000000000"]
+      image: dougbtv/centos-network
+```

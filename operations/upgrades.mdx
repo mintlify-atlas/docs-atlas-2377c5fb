@@ -1,0 +1,238 @@
+---
+title: 'Upgrading Kubernetes Clusters with Kubespray'
+description: 'Upgrade Kubernetes clusters with upgrade-cluster.yml: pin component versions, handle multi-hop upgrades, and perform node-by-node or component-level updates.'
+keywords: ['upgrade', 'kubernetes upgrade', 'upgrade-cluster', 'version pinning', 'rolling upgrade', 'multiple upgrades']
+---
+
+Kubespray upgrades clusters using the same ordered playbook execution as the initial deployment. Each component is upgraded in a fixed sequence, ensuring consistency between fresh installs and upgrades. You can use the dedicated `upgrade-cluster.yml` playbook for graceful, rolling upgrades, or target individual components using Ansible tags.
+
+## Component version variables
+
+You can pin specific component versions by setting these variables in your inventory before running an upgrade:
+
+| Variable | Component |
+|---|---|
+| `kube_version` | Kubernetes |
+| `etcd_version` | etcd |
+| `containerd_version` | containerd (when `container_manager == containerd`) |
+| `docker_version` | Docker |
+| `docker_containerd_version` | containerd bundled with Docker |
+| `calico_version` | Calico |
+| `calico_cni_version` | Calico CNI |
+| `flannel_version` | Flannel |
+
+## Upgrade order
+
+Components are upgraded in the same order they were installed:
+
+1. Docker
+2. Containerd
+3. etcd
+4. kubelet and kube-proxy
+5. Network plugin (e.g. Calico)
+6. kube-apiserver, kube-scheduler, and kube-controller-manager
+7. Add-ons (e.g. KubeDNS)
+
+## Graceful upgrade
+
+The `upgrade-cluster.yml` playbook performs cordon, drain, upgrade, and uncordon for each node in sequence. It can only be used on an existing cluster — there must be at least one `kube_control_plane` node already deployed.
+
+```bash
+ansible-playbook upgrade-cluster.yml -b \
+  -i inventory/sample/hosts.ini \
+  -e kube_version=1.19.7
+```
+
+After a successful upgrade, verify the server version:
+
+```bash
+kubectl version
+```
+
+### Controlling batch size
+
+By default, nodes are upgraded in batches of 20% of the total available nodes. To upgrade one node at a time:
+
+```bash
+ansible-playbook upgrade-cluster.yml -b \
+  -i inventory/sample/hosts.ini \
+  -e kube_version=1.20.7 \
+  -e "serial=1"
+```
+
+### Pausing during the upgrade
+
+You can pause the upgrade playbook before or after each node to allow manual inspection or intervention.
+
+<AccordionGroup>
+  <Accordion title="Pause before upgrading each node">
+    ```yaml
+    # Pause and wait for manual approval
+    upgrade_node_confirm: true
+
+    # Pause for a fixed number of seconds
+    upgrade_node_pause_seconds: 60
+    ```
+  </Accordion>
+  <Accordion title="Pause after upgrading each node (before uncordon)">
+    ```yaml
+    # Pause and wait for manual approval after upgrade
+    upgrade_node_post_upgrade_confirm: true
+
+    # Pause for a fixed number of seconds after upgrade
+    upgrade_node_post_upgrade_pause_seconds: 60
+    ```
+
+    This is useful for rebooting the node to apply kernel updates, or testing the node while it is still cordoned.
+  </Accordion>
+</AccordionGroup>
+
+## Node-based upgrade
+
+To upgrade only specific nodes, use `--limit` patterns. Before doing so, refresh the facts cache for all nodes first:
+
+```bash
+ansible-playbook playbooks/facts.yml -b -i inventory/sample/hosts.ini
+```
+
+Then upgrade control plane and etcd groups first:
+
+```bash
+ansible-playbook upgrade-cluster.yml -b \
+  -i inventory/sample/hosts.ini \
+  -e kube_version=1.20.7 \
+  --limit "kube_control_plane:etcd"
+```
+
+Then upgrade remaining nodes in any order and quantity:
+
+```bash
+ansible-playbook upgrade-cluster.yml -b \
+  -i inventory/sample/hosts.ini \
+  -e kube_version=1.20.7 \
+  --limit "node4:node6:node7:node12"
+```
+
+## Unsafe upgrade (without drain)
+
+If you want to update only the Kubernetes version without the full drain-and-uncordon cycle, you can use `cluster.yml` with `upgrade_cluster_setup=true`. This updates components like kube-apiserver immediately without graceful node handling:
+
+```bash
+ansible-playbook cluster.yml \
+  -i inventory/sample/hosts.ini \
+  -e kube_version=1.18.10 \
+  -e upgrade_cluster_setup=true
+```
+
+<Warning>
+  The unsafe upgrade method skips cordon and drain. Use `upgrade-cluster.yml` for production workloads to avoid disruption.
+</Warning>
+
+## Multiple upgrades (multi-hop)
+
+<Warning>
+  Do not skip minor releases when upgrading. Upgrade one Kubespray tag at a time. Skipping minor versions is unsupported and likely to break your cluster.
+</Warning>
+
+For example, given these tags:
+
+```text
+v2.20.0
+v2.21.0
+v2.22.0
+v2.22.1
+v2.23.0
+v2.23.1
+v2.23.2
+v2.24.0
+```
+
+- `v2.22.0` → `v2.23.2` → `v2.24.0` ✓
+- `v2.22.0` → `v2.24.0` ✗
+
+To upgrade, check out the next tag and run `upgrade-cluster.yml`. If you have pinned `kube_version` in your inventory, update it before running the upgrade or pass it explicitly on the command line:
+
+```bash
+ansible-playbook -i inventory/mycluster/hosts.ini -b upgrade-cluster.yml \
+  -e kube_version=1.11.3
+```
+
+<Note>
+  You may need to run `pip3 install -r requirements.txt` when upgrading between Kubespray versions, as Python dependency requirements can change.
+</Note>
+
+<Tip>
+  Always review changes between the sample inventory and your own inventory when upgrading Kubespray versions. Variable formats can change between minor releases.
+</Tip>
+
+## Upgrading to v2.19
+
+`etcd_kubeadm_enabled` is deprecated as of v2.19. Use `etcd_deployment_type: kubeadm` instead.
+
+From v2.19 onward, `etcd_deployment_type` must be placed in `group_vars/all/etcd.yml` instead of `group_vars/etcd.yml` due to scope changes. If your cluster used `etcd_kubeadm_enabled: true`, remove that variable and set `etcd_deployment_type: kubeadm` in `group_vars/all/etcd.yml`.
+
+## Component-based upgrades
+
+To upgrade a single component without running the full playbook, use Ansible tags. These commands only work on fully-deployed, healthy hosts.
+
+<Warning>
+  Component-based upgrades are not covered by CI and are not guaranteed to work in all scenarios.
+</Warning>
+
+<CodeGroup>
+
+```bash Upgrade Docker
+ansible-playbook -b -i inventory/sample/hosts.ini cluster.yml --tags=docker
+```
+
+```bash Upgrade etcd
+ansible-playbook -b -i inventory/sample/hosts.ini cluster.yml --tags=etcd
+```
+
+```bash Upgrade etcd (no cert rotation)
+ansible-playbook -b -i inventory/sample/hosts.ini cluster.yml \
+  --tags=etcd --limit=etcd --skip-tags=etcd-secrets
+```
+
+```bash Upgrade kubelet
+ansible-playbook -b -i inventory/sample/hosts.ini cluster.yml \
+  --tags=node --skip-tags=k8s-gen-certs
+```
+
+```bash Upgrade control plane
+ansible-playbook -b -i inventory/sample/hosts.ini cluster.yml --tags=master
+```
+
+```bash Upgrade network plugins
+ansible-playbook -b -i inventory/sample/hosts.ini cluster.yml --tags=network
+```
+
+```bash Upgrade add-ons
+ansible-playbook -b -i inventory/sample/hosts.ini cluster.yml --tags=apps
+```
+
+```bash Upgrade Helm
+ansible-playbook -b -i inventory/sample/hosts.ini cluster.yml --tags=helm
+```
+
+</CodeGroup>
+
+## System package upgrade
+
+To upgrade APT or YUM packages on nodes while they are cordoned:
+
+```bash
+ansible-playbook upgrade-cluster.yml -b \
+  -i inventory/sample/hosts.ini \
+  -e system_upgrade=true
+```
+
+Nodes are rebooted when package upgrades are available (`system_upgrade_reboot: on-upgrade`). Change this to `always` or `never` as needed.
+
+<Note>
+  Downloads will happen twice unless `system_upgrade_reboot` is set to `never`.
+</Note>
+
+## Migrating from Docker to containerd
+
+Migrating container engines between existing nodes is not officially supported by Kubespray. As of Kubespray 2.18.0, containerd is the default container engine. When possible, reset and redeploy the cluster with the new container engine rather than migrating in place.

@@ -1,0 +1,276 @@
+---
+title: "Kubernetes DNS Stack Configuration in Kubespray"
+description: "Configure CoreDNS, NodeLocal DNSCache, and DNS resolution modes for your Kubespray-managed Kubernetes cluster with full variable reference."
+keywords: ["CoreDNS", "NodeLocal DNS", "dns_mode", "resolvconf_mode", "dns_domain", "Kubespray DNS"]
+---
+
+Kubespray configures a Kubernetes DNS add-on to serve as the authoritative DNS server for a given `dns_domain` and its `svc` and `default.svc` subdomains (up to `ndots: 5` max levels). Non-cluster nodes in the inventory — such as external storage nodes or a dedicated etcd group — are left for you to configure DNS resolution separately.
+
+## DNS variables
+
+These global variables control DNS behavior across the cluster.
+
+<AccordionGroup>
+  <Accordion title="ndots">
+    The `ndots` value written to `/etc/resolv.conf`. A high `ndots` value combined with many search domains causes excessive DNS lookups and degrades performance — choose this value carefully.
+  </Accordion>
+
+  <Accordion title="dns_timeout">
+    The `timeout` value written to `/etc/resolv.conf`, controlling how long a resolver waits for a response before retrying.
+  </Accordion>
+
+  <Accordion title="dns_attempts">
+    The `attempts` value written to `/etc/resolv.conf`, controlling how many times a resolver retries a failed query.
+  </Accordion>
+
+  <Accordion title="searchdomains">
+    Custom search domains added in addition to the cluster defaults (`default.svc.{{ dns_domain }}`, `svc.{{ dns_domain }}`). Most Linux systems limit search domains to 6 names and 256 characters total. Because the two default cluster subdomains already consume two slots, you are effectively limited to 4 custom names and 239 characters. Set `remove_default_searchdomains: true` to reclaim those two slots.
+
+    <Note>
+      When using `resolvconf_mode: docker_dns`, the host system's search domains are automatically appended to the docker daemon configuration, counting against these limits.
+    </Note>
+  </Accordion>
+
+  <Accordion title="nameservers">
+    Only used by `resolvconf_mode: host_resolvconf`. These nameservers are appended to `/etc/resolv.conf` *after* `upstream_dns_servers` and act as backup resolvers. If unset, Kubespray chooses a default based on the cloud provider or falls back to `8.8.8.8`. You can specify at most two custom servers because one slot is reserved for the cluster DNS.
+  </Accordion>
+
+  <Accordion title="upstream_dns_servers">
+    DNS servers added *after* the cluster DNS in all `resolvconf_mode` modes. These are used as backup resolvers during early cluster deployment, before cluster DNS is available.
+  </Accordion>
+
+  <Accordion title="dns_upstream_forward_extra_opts">
+    A dictionary of additional options for the `forward` plugin block in CoreDNS and NodeLocal DNS. By default, only the hardcoded options in the template are used. See the [CoreDNS forward plugin docs](https://coredns.io/plugins/forward/) for available options.
+  </Accordion>
+</AccordionGroup>
+
+## CoreDNS-specific variables
+
+<AccordionGroup>
+  <Accordion title="coredns_kubernetes_extra_opts">
+    Custom options appended to the `kubernetes` plugin block in the CoreDNS configuration.
+  </Accordion>
+
+  <Accordion title="coredns_kubernetes_extra_domains">
+    Extra domains forwarded to the `kubernetes` CoreDNS plugin.
+  </Accordion>
+
+  <Accordion title="coredns_additional_configs">
+    Freeform configuration appended to the CoreDNS `Corefile`.
+  </Accordion>
+
+  <Accordion title="coredns_rewrite_block">
+    A block for the CoreDNS [rewrite](https://coredns.io/plugins/rewrite/) plugin to perform internal message rewriting.
+  </Accordion>
+
+  <Accordion title="coredns_external_zones">
+    An array of external zone definitions that CoreDNS will forward queries to, injected before the default Kubernetes zone. Use this to route queries for known external or VPN-internal domains to dedicated resolvers.
+
+    <CodeGroup>
+
+    ```yaml inventory/group_vars/k8s_cluster/k8s-cluster.yml
+    coredns_external_zones:
+      - zones:
+          - example.com
+          - example.io:1053
+        nameservers:
+          - 1.1.1.1
+          - 2.2.2.2
+        cache: 5
+      - zones:
+          - https://mycompany.local:4453
+        nameservers:
+          - 192.168.0.53
+        cache: 0
+      - zones:
+          - mydomain.tld
+        nameservers:
+          - 10.233.0.3
+        cache: 5
+        rewrite:
+          - name stop website.tld website.namespace.svc.cluster.local
+    ```
+
+    ```ini INI format
+    coredns_external_zones='[{"cache": 30,"zones":["example.com","example.io:453"],"nameservers":["1.1.1.1","2.2.2.2"]}]'
+    ```
+
+    </CodeGroup>
+  </Accordion>
+
+  <Accordion title="dns_etchosts">
+    Optional static host entries provided to CoreDNS as a virtual `/etc/hosts` file. When NodeLocal DNS is enabled, these entries are also applied there.
+
+    ```yaml inventory/group_vars/k8s_cluster/k8s-cluster.yml
+    dns_etchosts: |
+      192.168.0.100 api.example.com
+      192.168.0.200 ingress.example.com
+    ```
+  </Accordion>
+
+  <Accordion title="enable_coredns_reverse_dns_lookups">
+    Whether reverse DNS lookups are enabled in the CoreDNS configuration. Defaults to `true`.
+  </Accordion>
+
+  <Accordion title="coredns_default_zone_cache_block">
+    Controls the caching behavior of CoreDNS on the default zone. The following example raises the max TTL, increases the success cache size, disables denial caching, and enables pre-fetching:
+
+    ```yaml inventory/group_vars/k8s_cluster/k8s-cluster.yml
+    coredns_default_zone_cache_block: |
+      cache 3600 {
+        success 3000
+        denial 0
+        prefetch 10 1m
+      }
+    ```
+  </Accordion>
+</AccordionGroup>
+
+## Handling DNS domain changes
+
+If you need to change `dns_domain` on an existing cluster and have workloads with the old domain embedded in their configuration, use `old_dns_domains` to keep both domains functional simultaneously.
+
+```yaml inventory/group_vars/k8s_cluster/k8s-cluster.yml
+old_dns_domains:
+  - example1.com
+  - example2.com
+dns_domain: cluster.local
+```
+
+With this configuration, `my-svc.my-ns.svc.example1.com`, `my-svc.my-ns.svc.example2.com`, and `my-svc.my-ns.svc.cluster.local` all resolve to the same answer.
+
+## DNS modes
+
+Use `dns_mode` to select how Kubespray deploys cluster DNS.
+
+<Tabs>
+  <Tab title="coredns (default)">
+    Installs a single CoreDNS deployment as the cluster DNS for all queries. This is the recommended and default mode.
+
+    ```yaml inventory/group_vars/k8s_cluster/k8s-cluster.yml
+    dns_mode: coredns
+    ```
+  </Tab>
+  <Tab title="coredns_dual">
+    Installs CoreDNS plus a secondary CoreDNS stack for additional redundancy.
+
+    ```yaml inventory/group_vars/k8s_cluster/k8s-cluster.yml
+    dns_mode: coredns_dual
+    ```
+  </Tab>
+  <Tab title="manual">
+    Skips CoreDNS installation. You specify `manual_dns_server` to configure nodes for pod DNS. Use this when you plan to install your own DNS server post-deployment.
+
+    ```yaml inventory/group_vars/k8s_cluster/k8s-cluster.yml
+    dns_mode: manual
+    manual_dns_server: 10.0.0.53
+    ```
+  </Tab>
+  <Tab title="none">
+    Installs no DNS solution at all. This leaves the cluster non-functional for DNS and is not recommended for production.
+
+    ```yaml inventory/group_vars/k8s_cluster/k8s-cluster.yml
+    dns_mode: none
+    ```
+  </Tab>
+</Tabs>
+
+## resolvconf modes
+
+`resolvconf_mode` controls how Kubespray configures DNS for `hostNetwork: true` pods and non-Kubernetes containers.
+
+<Tabs>
+  <Tab title="host_resolvconf (default)">
+    Modifies the host's `/etc/resolv.conf` and `dhclient` configuration to point to the cluster DNS server. Deployment happens in two stages:
+
+    1. **Early stage** (`dns_early: true`): `/etc/resolv.conf` is configured with `upstream_dns_servers` and `nameservers`.
+    2. **Later stage**: `/etc/resolv.conf` is reconfigured to use cluster DNS first, with other nameservers as backups.
+
+    <Warning>
+      This mode purges all existing records from `/etc/resolv.conf`, including resolvconf base/head/cloud-init configs and dhclient entries.
+    </Warning>
+  </Tab>
+  <Tab title="docker_dns">
+    Configures the Docker daemon with `--dns`, `--dns-search`, and `--dns-opt` flags. Nameservers are applied in this order: cluster DNS, `upstream_dns_servers`, host system nameservers.
+
+    Default DNS options passed to Docker:
+
+    ```yaml inventory/group_vars/k8s_cluster/k8s-cluster.yml
+    docker_dns_options:
+      - ndots:{{ ndots }}
+      - timeout:2
+      - attempts:2
+    ```
+
+    <Note>
+      For regular pods, Kubernetes ignores these Docker settings and uses its own DNS configuration. Only `hostNetwork: true` pods and containers not managed by Kubernetes use these Docker DNS options.
+    </Note>
+  </Tab>
+  <Tab title="none">
+    Makes no changes to `/etc/resolv.conf`. The cluster works normally for pod DNS, but `hostNetwork: true` pods and non-Kubernetes containers cannot resolve cluster service names.
+  </Tab>
+</Tabs>
+
+## NodeLocal DNSCache
+
+NodeLocal DNSCache runs a DNS caching agent on every node, so pods contact a local cache instead of traversing iptables DNAT rules and connection tracking to reach CoreDNS. Cache misses for `cluster.local` queries are forwarded to the central CoreDNS service.
+
+<Note>
+  NodeLocal DNSCache is enabled by default as of Kubespray 2.10.
+</Note>
+
+```yaml inventory/group_vars/k8s_cluster/k8s-cluster.yml
+enable_nodelocaldns: true
+```
+
+### External zones for NodeLocal DNS
+
+You can extend the NodeLocal DNS configuration with external zone forwarding, following the same structure as `coredns_external_zones`:
+
+```yaml inventory/group_vars/k8s_cluster/k8s-cluster.yml
+nodelocaldns_external_zones:
+  - zones:
+      - example.com
+      - example.io:1053
+    nameservers:
+      - 1.1.1.1
+      - 2.2.2.2
+    cache: 5
+  - zones:
+      - https://mycompany.local:4453
+    nameservers:
+      - 192.168.0.53
+```
+
+### Additional NodeLocal DNS configuration
+
+Use `nodelocaldns_additional_configs` to append extra configuration blocks to the NodeLocal DNS `Corefile`.
+
+### NodeLocal DNS high availability
+
+Under certain upgrade conditions, the single NodeLocal DNS pod may be replaced too slowly, causing brief DNS timeouts. To mitigate this, enable a secondary NodeLocal DNS pod per node:
+
+```yaml inventory/group_vars/k8s_cluster/k8s-cluster.yml
+enable_nodelocaldns_secondary: true
+nodelocaldns_secondary_skew_seconds: 5
+```
+
+<Warning>
+  When `enable_nodelocaldns_secondary` is `true`, the primary pod no longer tears down its iptables rules on shutdown. If both primary and secondary pods fail simultaneously on the same node, DNS traffic will not fall back to the central CoreDNS service, causing a DNS blackout on that node.
+</Warning>
+
+### systemd-resolved stub listener
+
+If CoreDNS fails to start with `address already in use` errors, set `DNSStubListener=no` via:
+
+```yaml inventory/group_vars/k8s_cluster/k8s-cluster.yml
+systemd_resolved_disable_stub_listener: true
+```
+
+This defaults to `true` on Flatcar distributions.
+
+## Known limitations
+
+- Search domains are limited to 6 names and 256 characters. The two default cluster subdomains (`svc`, `default.svc`) reduce the effective limit to 4 custom names and 239 characters. Use `remove_default_searchdomains: true` to restore the full limit.
+- You can specify at most 2 custom `nameservers` because one slot is reserved for cluster DNS.
+- `upstream_dns_servers` is available as a workaround when you need more than 3 total nameservers.

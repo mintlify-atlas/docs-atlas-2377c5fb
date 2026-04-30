@@ -1,0 +1,192 @@
+---
+title: "Vagrant-based local Kubespray development environment"
+description: "Spin up a multi-node Kubernetes cluster locally using Vagrant and VirtualBox or libvirt to test Kubespray changes without cloud infrastructure."
+---
+
+Vagrant lets you run a real multi-node Kubespray cluster on your local machine, making it the fastest way to test playbook changes end-to-end without touching cloud infrastructure. The default `Vagrantfile` boots three VMs and runs the full `cluster.yml` playbook automatically. On a dual-core i5-6300u laptop with an SSD, provisioning takes roughly 13–15 minutes once images are cached.
+
+<Note>
+  libvirt/qemu is recommended over VirtualBox. It boots VMs significantly faster and uses less RAM.
+</Note>
+
+## Prerequisites
+
+- Vagrant 2.0 or later
+- VirtualBox **or** libvirt/QEMU (VMware may work but is untested)
+- At least 12 GB RAM (8 GB is workable with zram swap configured)
+- Python 3.9 or later
+
+## Quick start
+
+<Steps>
+  <Step title="Set up a Python virtual environment">
+    Install Kubespray's Python dependencies before running Vagrant, so the Ansible provisioner has the correct packages:
+
+    ```bash
+    VENVDIR=venv
+    virtualenv --python=/usr/bin/python3 $VENVDIR
+    source $VENVDIR/bin/activate
+    pip install -r requirements.txt
+    ```
+  </Step>
+
+  <Step title="Start the cluster">
+    Run `vagrant up` from the repository root. This boots three VMs (`k8s-1`, `k8s-2`, `k8s-3`) and runs the Kubespray cluster playbook:
+
+    ```bash
+    vagrant up
+    ```
+  </Step>
+
+  <Step title="Configure kubectl">
+    The Vagrantfile places the admin kubeconfig and `kubectl` binary in `.vagrant/provisioners/ansible/inventory/artifacts/`:
+
+    ```bash
+    export INV=.vagrant/provisioners/ansible/inventory
+    export KUBECONFIG=${INV}/artifacts/admin.conf
+    export PATH=$PATH:$PWD/$INV/artifacts
+    ```
+  </Step>
+
+  <Step title="Verify the cluster">
+    ```bash
+    kubectl get nodes
+    ```
+
+    Expected output for a default three-node cluster:
+
+    ```
+    NAME    STATUS   ROLES                  AGE     VERSION
+    kub-1   Ready    control-plane,master   4m37s   v1.22.5
+    kub-2   Ready    control-plane,master   4m7s    v1.22.5
+    kub-3   Ready    <none>                 3m7s    v1.22.5
+    ```
+  </Step>
+</Steps>
+
+## Customising Vagrant
+
+You can override any Vagrantfile default without editing the file itself. Create a `vagrant/config.rb` file in the repository root — the Vagrantfile loads it automatically via the `KUBESPRAY_VAGRANT_CONFIG` environment variable (or the default path).
+
+```ruby
+# vagrant/config.rb
+$instance_name_prefix = "kub"
+$vm_cpus = 1
+$num_instances = 3
+$os = "centos8-bento"
+$subnet = "10.0.20"
+$network_plugin = "flannel"
+
+$extra_vars = {
+    dns_domain: "my.custom.domain"
+}
+# or point to a vars file:
+$extra_vars = "path/to/extra/vars/file.yml"
+```
+
+### Available configuration variables
+
+| Variable | Default | Description |
+|---|---|---|
+| `$num_instances` | `3` | Number of VMs to create |
+| `$instance_name_prefix` | `"k8s"` | Prefix for VM hostnames (e.g. `k8s-1`) |
+| `$vm_memory` | `2048` | RAM per VM in MB |
+| `$vm_cpus` | `2` | vCPUs per VM |
+| `$os` | `"ubuntu2004"` | OS box to use (see supported list below) |
+| `$network_plugin` | `"flannel"` | CNI plugin: `flannel`, `calico`, `cilium`, etc. |
+| `$subnet` | `"172.18.8"` | Private network subnet prefix |
+| `$subnet_ipv6` | `"fd3c:b398:0698:0756"` | IPv6 subnet prefix |
+| `$multi_networking` | `"False"` | Install Multus for multi-network support |
+| `$download_run_once` | `"True"` | Download images once and redistribute to other nodes |
+| `$download_force_cache` | `"False"` | Force use of the local download cache |
+| `$playbook` | `"cluster.yml"` | Playbook to run during provisioning |
+| `$ansible_verbosity` | `false` | Set to `"-vvv"` for verbose Ansible output |
+| `$ansible_tags` | `""` | Ansible `--tags` to pass (also via `VAGRANT_ANSIBLE_TAGS` env var) |
+| `$kube_node_instances_with_disks` | `false` | Attach extra disks to nodes (libvirt only) |
+| `$libvirt_nested` | `false` | Enable nested virtualisation in libvirt |
+| `$local_path_provisioner_enabled` | `"False"` | Enable the local-path storage provisioner |
+
+## Supported operating systems
+
+The `SUPPORTED_OS` map in the Vagrantfile defines all available boxes:
+
+<Tabs>
+  <Tab title="Ubuntu">
+    | Key | Vagrant box |
+    |---|---|
+    | `ubuntu2004` | `generic/ubuntu2004` |
+    | `ubuntu2204` | `generic/ubuntu2204` |
+    | `ubuntu2404` | `bento/ubuntu-24.04` |
+  </Tab>
+  <Tab title="Fedora / RHEL family">
+    | Key | Vagrant box |
+    |---|---|
+    | `fedora39` | `fedora/39-cloud-base` |
+    | `fedora40` | `fedora/40-cloud-base` |
+    | `fedora41` | `fedora/41-cloud-base` |
+    | `fedora42` | `fedora/42-cloud-base` |
+    | `almalinux8` | `almalinux/8` |
+    | `almalinux9` | `almalinux/9` |
+    | `rockylinux8` | `rockylinux/8` |
+    | `rockylinux9` | `rockylinux/9` |
+    | `centos8` | `centos/8` |
+    | `centos8-bento` | `bento/centos-8` |
+    | `rhel8` | `generic/rhel8` |
+    | `oraclelinux` | `generic/oracle7` |
+    | `oraclelinux8` | `generic/oracle8` |
+  </Tab>
+  <Tab title="Debian">
+    | Key | Vagrant box |
+    |---|---|
+    | `debian11` | `debian/bullseye64` |
+    | `debian12` | `debian/bookworm64` |
+  </Tab>
+  <Tab title="Flatcar / openSUSE">
+    | Key | Vagrant box |
+    |---|---|
+    | `flatcar-stable` | `flatcar-stable` |
+    | `flatcar-beta` | `flatcar-beta` |
+    | `flatcar-alpha` | `flatcar-alpha` |
+    | `flatcar-edge` | `flatcar-edge` |
+    | `opensuse` | `opensuse/Leap-15.6.x86_64` |
+    | `opensuse-tumbleweed` | `opensuse/Tumbleweed.x86_64` |
+  </Tab>
+</Tabs>
+
+To use a different OS, set `$os` in `vagrant/config.rb`:
+
+```bash
+echo '$os = "flatcar-stable"' >> vagrant/config.rb
+```
+
+## File and image caching
+
+Provisioning downloads container images, binaries, and other files that can total several gigabytes. The Vagrantfile sets `download_run_once: True` by default, which:
+
+1. Downloads all assets once on the first node
+2. Redistributes them to the remaining nodes over the private network
+3. Caches downloads locally in `~/kubespray_cache` for reuse on subsequent runs
+
+This dramatically speeds up re-provisioning when iterating on playbook changes.
+
+## Re-running the provisioner
+
+If a `vagrant up` run fails partway through, fix the underlying issue and re-run Ansible without destroying the VMs:
+
+```bash
+vagrant provision
+```
+
+## Verifying cluster health
+
+After a successful provision, check all system pods are running:
+
+```bash
+kubectl get pods --all-namespaces -o wide
+```
+
+A healthy three-node cluster shows pods for `coredns`, `kube-apiserver`, `kube-controller-manager`, `kube-scheduler`, `kube-proxy`, `kube-flannel`, `nodelocaldns`, and `nginx-proxy` all in `Running` state.
+
+<Tip>
+  Set `$ansible_verbosity = "-vvv"` in `vagrant/config.rb` when debugging a failing playbook task. Ansible's full output is written to the terminal during `vagrant up` and `vagrant provision`.
+</Tip>

@@ -1,0 +1,273 @@
+---
+title: 'Deploying Kubespray in an Air-Gapped Environment'
+description: 'Deploy Kubespray in air-gapped environments by mirroring container images, hosting static binaries, and configuring private registries.'
+keywords: ['offline', 'air-gap', 'private registry', 'mirror', 'disconnected', 'files_repo', 'registry_host']
+---
+
+When your target servers have no direct internet access — common in on-premises or high-security environments — you must pre-stage all required artifacts and host them on internal services. Kubespray supports fully offline deployments by allowing every download URL and image registry to be redirected to internal mirrors.
+
+## What you need to pre-stage
+
+<CardGroup cols={2}>
+  <Card title="Static files" icon="file">
+    Binaries and zip archives (CNI plugins, kubeadm, kubectl, etc.)
+  </Card>
+  <Card title="OS packages" icon="box">
+    RPM or DEB packages for Docker, containerd, and system dependencies
+  </Card>
+  <Card title="Container images" icon="layers">
+    All images used by Kubespray — the exact set depends on your configuration
+  </Card>
+  <Card title="Python packages (optional)" icon="brand-python">
+    Required only if your OS does not provide all packages listed in `requirements.txt`
+  </Card>
+</CardGroup>
+
+You can generate the full list of required artifacts using the [`generate_list.sh`](https://github.com/kubernetes-sigs/kubespray/blob/master/contrib/offline/generate_list.sh) script. Additional tooling for offline deployment is available under `contrib/offline/`.
+
+## Internal services required
+
+You need to set up the following services in your offline environment before running Kubespray:
+
+- An HTTP reverse proxy, cache, or mirror to serve static files (binaries and zips)
+- An internal Yum or Deb repository for OS packages
+- An internal container image registry populated with all images used by Kubespray
+- *(Optional)* An internal PyPI server for Python packages
+- *(Optional)* An internal Helm registry for chart files
+
+<Tip>
+  Use the original public domains as top-level directories in your `files_repo`. For example: `github.com/`, `dl.k8s.io/`, `storage.googleapis.com/`, `get.helm.sh/`. This minimises the number of path overrides needed in your inventory.
+</Tip>
+
+<Tip>
+  For Cilium, mirror `https://helm.cilium.io/index.yaml` and the chart tarball (e.g. `cilium-1.18.2.tgz`) into your `files_repo`.
+</Tip>
+
+## Authenticating with private services
+
+### Authenticated files\_repo
+
+To specify credentials for your `files_repo`, use URL-encoded credentials in the repo URL. Store the password with Ansible Vault to avoid exposing it in logs:
+
+```yaml
+files_repo_host: example.com
+files_repo_path: /repo
+files_repo_user: download
+files_repo_pass: !vault |
+          $ANSIBLE_VAULT;1.1;AES256
+          61663232643236353864663038616361373739613338623338656434386662363539613462626661
+          6435333438313034346164313631303534346564316361370a306661393232626364376436386439
+          64653965663965356137333436616536643132336630313235333232336661373761643766356366
+          6232353233386534380a373262313634613833623537626132633033373064336261383166323230
+          3164
+files_repo: "https://{{ files_repo_user ~ ':' ~ files_repo_pass ~ '@' ~ files_repo_host ~ files_repo_path }}"
+```
+
+<Warning>
+  The boolean `unsafe_show_logs` will expose these credentials when the `Download_file | Show url of file to download` task runs. Disable it in your AWX, AAP, or Semaphore job template if needed.
+</Warning>
+
+### Authenticated container registry
+
+Store the registry password with Ansible Vault:
+
+```yaml
+registry_pass: !vault |
+          $ANSIBLE_VAULT;1.1;AES256
+          61663232643236353864663038616361373739613338623338656434386662363539613462626661
+          6435333438313034346164313631303534346564316361370a306661393232626364376436386439
+          64653965663965356137333436616536643132336630313235333232336661373761643766356366
+          6232353233386534380a373262313634613833623537626132633033373064336261383166323230
+          3164
+```
+
+Configure containerd to authenticate against your private registry:
+
+<Tabs>
+  <Tab title="containerd 2+">
+    ```yaml
+    containerd_registries_mirrors:
+      - prefix: docker.io
+        mirrors:
+          - host: https://registry-1.docker.io
+            capabilities: ["pull", "resolve"]
+            skip_verify: false
+      - prefix: "{{ registry_addr }}"
+        mirrors:
+          - host: "https://{{ registry_addr }}"
+            capabilities: ["pull", "resolve"]
+            skip_verify: false
+            header:
+              Authorization: ["Basic {{ (registry_user + ':' + registry_pass) | b64encode }}"]
+    ```
+  </Tab>
+  <Tab title="containerd 1.7">
+    ```yaml
+    containerd_registry_auth:
+      - registry: "{{ registry_host }}"
+        username: "{{ registry_user }}"
+        password: "{{ registry_pass }}"
+    ```
+  </Tab>
+</Tabs>
+
+## Configuring inventory variables
+
+Once all artifacts are accessible from your internal network, update the following variables in `inventory/sample/group_vars/all/offline.yml` (or your equivalent):
+
+```yaml
+# Registry overrides
+kube_image_repo: "{{ registry_host }}"
+gcr_image_repo: "{{ registry_host }}"
+docker_image_repo: "{{ registry_host }}"
+quay_image_repo: "{{ registry_host }}"
+github_image_repo: "{{ registry_host }}"
+github_url: "{{ files_repo }}/github.com"
+dl_k8s_io_url: "{{ files_repo }}/dl.k8s.io"
+storage_googleapis_url: "{{ files_repo }}/storage.googleapis.com"
+get_helm_url: "{{ files_repo }}/get.helm.sh"
+local_path_provisioner_helper_image_repo: "{{ registry_host }}/busybox"
+
+# Insecure registry mirror for containerd (see authenticated example above for production use)
+containerd_registries_mirrors:
+  - prefix: "{{ registry_addr }}"
+    mirrors:
+      - host: "{{ registry_host }}"
+        capabilities: ["pull", "resolve"]
+        skip_verify: true
+
+# Cilium
+cilium_install_extra_flags: "--repository {{ files_repo }}/helm.cilium.io/"
+cilium_extra_values:
+  image:
+    useDigest: false
+  hubble:
+    relay:
+      image:
+        useDigest: false
+    ui:
+      backend:
+        image:
+          useDigest: false
+      frontend:
+        image:
+          useDigest: false
+  operator:
+    image:
+      override: "{{ registry_host }}/cilium/operator-generic:v1.18.2"
+      useDigest: false
+      extension: ""
+  certgen:
+    image:
+      useDigest: false
+  envoy:
+    image:
+      useDigest: false
+```
+
+OS package repository settings — define only the ones matching your OS:
+
+<Tabs>
+  <Tab title="RHEL / AlmaLinux / Rocky">
+    ```yaml
+    docker_rh_repo_base_url: "{{ yum_repo }}/docker-ce/$releasever/$basearch"
+    docker_rh_repo_gpgkey: "{{ yum_repo }}/docker-ce/gpg"
+    ```
+  </Tab>
+  <Tab title="Fedora">
+    ```yaml
+    docker_fedora_repo_base_url: "{{ yum_repo }}/docker-ce/{{ ansible_distribution_major_version }}/{{ ansible_architecture }}"
+    docker_fedora_repo_gpgkey: "{{ yum_repo }}/docker-ce/gpg"
+    containerd_fedora_repo_base_url: "{{ yum_repo }}/containerd"
+    containerd_fedora_repo_gpgkey: "{{ yum_repo }}/docker-ce/gpg"
+    ```
+  </Tab>
+  <Tab title="Debian">
+    ```yaml
+    docker_debian_repo_base_url: "{{ debian_repo }}/docker-ce"
+    docker_debian_repo_gpgkey: "{{ debian_repo }}/docker-ce/gpg"
+    containerd_debian_repo_base_url: "{{ ubuntu_repo }}/containerd"
+    containerd_debian_repo_gpgkey: "{{ ubuntu_repo }}/containerd/gpg"
+    containerd_debian_repo_repokey: 'YOURREPOKEY'
+    ```
+  </Tab>
+  <Tab title="Ubuntu">
+    ```yaml
+    docker_ubuntu_repo_base_url: "{{ ubuntu_repo }}/docker-ce"
+    docker_ubuntu_repo_gpgkey: "{{ ubuntu_repo }}/docker-ce/gpg"
+    containerd_ubuntu_repo_base_url: "{{ ubuntu_repo }}/containerd"
+    containerd_ubuntu_repo_gpgkey: "{{ ubuntu_repo }}/containerd/gpg"
+    containerd_ubuntu_repo_repokey: 'YOURREPOKEY'
+    ```
+  </Tab>
+</Tabs>
+
+### Required inventory variables
+
+| Variable | Description |
+|---|---|
+| `registry_host` | Full container image registry URL (e.g. `https://registry.example.com`). If you use the same repository paths as Kubespray defaults, no `*_image_repo` overrides are needed. |
+| `registry_addr` | Registry address as `[domain or ip]:[port]` only — no protocol prefix. |
+| `files_repo` | HTTP server URL serving static binaries and archives. Including `*_version` in the path helps avoid updating this variable on every Kubespray upgrade. |
+| `yum_repo` / `debian_repo` / `ubuntu_repo` | OS package repository URL for your platform. Used for Docker and containerd packages. Other packages may come from separate repositories. |
+
+<Tip>
+  You can skip installing packages from other repositories by passing `--skip-tags system-packages` to your Ansible playbook run.
+</Tip>
+
+## Installing Kubespray Python packages
+
+<Tabs>
+  <Tab title="Kubespray container image (recommended)">
+    The easiest approach is to use the [kubespray container image](https://quay.io/kubespray/kubespray), which includes all required Python packages. Copy the image to your private registry, then mount your inventory into the container:
+
+    ```bash
+    docker run --rm -it \
+      -v path_to_inventory/my_airgap_cluster:inventory/my_airgap_cluster \
+      myprivateregistry.com/kubespray/kubespray:v2.14.0 \
+      ansible-playbook -i inventory/my_airgap_cluster/hosts.yaml -b cluster.yml
+    ```
+  </Tab>
+  <Tab title="HTTP/S proxy">
+    ```bash
+    sudo pip install \
+      --proxy=https://[username:password@]proxyserver:port \
+      -r requirements.txt
+    ```
+  </Tab>
+  <Tab title="Internal PyPI server">
+    ```bash
+    # All required packages hosted internally
+    pip install -i https://pypiserver/pypi -r requirements.txt
+
+    # Only packages missing from the OS package manager
+    pip install -i https://pypiserver/pypi package_you_miss
+    ```
+  </Tab>
+</Tabs>
+
+## Running the deployment
+
+Once all artifacts are staged and your inventory is configured, run Kubespray with the standard command:
+
+```bash
+ansible-playbook -i inventory/my_airgap_cluster/hosts.yaml -b cluster.yml
+```
+
+## Using public mirrors
+
+If your nodes can reach selected public mirror sites (but not the full internet), you can redirect downloads to a community-run mirror. For example, to use the DaoCloud mirror for deployments in China:
+
+```yaml
+# group_vars/k8s_cluster.yml
+gcr_image_repo: "gcr.m.daocloud.io"
+kube_image_repo: "k8s.m.daocloud.io"
+docker_image_repo: "docker.m.daocloud.io"
+quay_image_repo: "quay.m.daocloud.io"
+github_image_repo: "ghcr.m.daocloud.io"
+files_repo: "https://files.m.daocloud.io"
+```
+
+<Warning>
+  Use mirror sites only if you trust the provider. The Kubespray team cannot verify the reliability or security of community-run mirrors.
+</Warning>

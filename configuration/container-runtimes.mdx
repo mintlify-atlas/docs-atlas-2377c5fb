@@ -1,0 +1,359 @@
+---
+title: "Container Runtimes Configuration in Kubespray"
+description: "Configure containerd, CRI-O, or Docker as the container runtime in Kubespray. Learn how to set container_manager and tune per-runtime options for Kubernetes."
+keywords: ["kubespray", "containerd", "cri-o", "docker", "container_manager", "container runtime", "CRI"]
+---
+
+Kubespray supports three container runtimes: containerd (the default), CRI-O, and Docker (via cri-dockerd). The runtime is selected by setting the `container_manager` variable before deploying the cluster. All nodes in a cluster must use the same runtime; mixing runtimes across nodes is not supported.
+
+## Selecting a runtime
+
+Set `container_manager` in `group_vars/k8s_cluster/k8s-cluster.yml`:
+
+```yaml
+## Container runtime
+## containerd (default), crio, or docker
+container_manager: containerd
+```
+
+<CardGroup cols={3}>
+  <Card title="containerd" icon="box">
+    Default and recommended runtime. Industry-standard, lightweight, and directly supported by the Kubernetes CRI. Works with all CNI plugins.
+  </Card>
+  <Card title="CRI-O" icon="circle-play">
+    Lightweight runtime purpose-built for Kubernetes. OCI-compatible, minimal footprint, and no Docker dependency. Requires `etcd_deployment_type: host`.
+  </Card>
+  <Card title="Docker" icon="docker">
+    Supported via `cri-dockerd`. Use when Docker-specific tooling or workflows are required. The native `dockershim` was removed in Kubernetes 1.24.
+  </Card>
+</CardGroup>
+
+## containerd
+
+containerd is the default runtime in Kubespray and is recommended for all new clusters. It is the upstream CRI implementation that kubeadm expects by default.
+
+### Basic configuration
+
+```yaml
+# group_vars/k8s_cluster/k8s-cluster.yml
+container_manager: containerd
+```
+
+```yaml
+# group_vars/all/etcd.yml
+etcd_deployment_type: host
+```
+
+### Registry mirrors
+
+Configure registry mirrors in `group_vars/all/containerd.yml`. containerd falls back to the upstream registry (`https://<prefix>`) when none of the configured mirrors have the image:
+
+```yaml
+containerd_registries_mirrors:
+  - prefix: docker.io
+    mirrors:
+      - host: https://mirror.gcr.io
+        capabilities: ["pull", "resolve"]
+        skip_verify: false
+      - host: https://registry-1.docker.io
+        capabilities: ["pull", "resolve"]
+        skip_verify: false
+```
+
+Override the fallback server using the `server` field:
+
+```yaml
+containerd_registries_mirrors:
+  - prefix: docker.io
+    mirrors:
+      - host: https://mirror.gcr.io
+        capabilities: ["pull", "resolve"]
+        skip_verify: false
+    server: https://mirror.example.org
+```
+
+Configure insecure (HTTP) registries with `skip_verify: true`:
+
+```yaml
+containerd_registries_mirrors:
+  - prefix: 172.19.16.11:5000
+    mirrors:
+      - host: http://172.19.16.11:5000
+        capabilities: ["pull", "resolve"]
+        skip_verify: true
+```
+
+<Warning>
+  The `containerd_registries` and `containerd_insecure_registries` variables are deprecated. Use `containerd_registries_mirrors` instead.
+</Warning>
+
+### Runtime classes
+
+containerd supports multiple runtime configurations for use with Kubernetes `RuntimeClass` objects. The default runtime is `runc`:
+
+```yaml
+containerd_runc_runtime:
+  name: runc
+  type: "io.containerd.runc.v2"
+  options:
+    SystemdCgroup: "false"
+    BinaryName: /usr/local/bin/my-runc
+  base_runtime_spec: cri-base.json
+```
+
+Add additional runtimes with `containerd_additional_runtimes`:
+
+```yaml
+containerd_additional_runtimes:
+  - name: kata-containers
+    type: "io.containerd.kata.v2"
+    options: {}
+```
+
+Change the active default runtime:
+
+```yaml
+containerd_default_runtime: kata-containers
+```
+
+### Base runtime spec and file descriptor limits
+
+The `runc` runtime uses `cri-base.json`, generated with `ctr oci spec`, to set OCI runtime spec defaults including maximum open file descriptors per container. Override the limit:
+
+```yaml
+containerd_base_runtime_spec_rlimit_nofile: 65535
+```
+
+Provide your own spec file for full control:
+
+```yaml
+containerd_base_runtime_specs:
+  cri-spec-custom.json: |
+    {
+      "ociVersion": "1.1.0",
+      "process": {
+        "rlimits": [
+          {
+            "type": "RLIMIT_NOFILE",
+            "hard": 65535,
+            "soft": 65535
+          }
+        ]
+      }
+    }
+
+containerd_runc_runtime:
+  name: runc
+  base_runtime_spec: cri-spec-custom.json
+```
+
+### Node Resource Interface (NRI)
+
+NRI is disabled by default. Enable it on containerd v1.7.0 or later:
+
+```yaml
+nri_enabled: true
+```
+
+### Static binary
+
+For compatibility with older distributions (such as Debian 11 with glibc < 2.34), use a statically linked containerd binary:
+
+```yaml
+containerd_static_binary: true
+```
+
+By default, Kubespray selects the static binary automatically when the system glibc version is below 2.34.
+
+## CRI-O
+
+CRI-O is a lightweight, Kubernetes-native container runtime. It implements only what the CRI specification requires and has no Docker dependency.
+
+<Note>
+  CRI-O requires Kubernetes v1.11.1 or later. It also requires `etcd_deployment_type: host` because kubeadm-managed etcd and CRI-O have known compatibility constraints.
+</Note>
+
+### Basic configuration
+
+```yaml
+# group_vars/all/all.yml
+download_container: false
+skip_downloads: false
+etcd_deployment_type: host   # or kubeadm
+
+# group_vars/k8s_cluster/k8s-cluster.yml
+container_manager: crio
+```
+
+### Registry mirrors
+
+Configure registry mirrors in `group_vars/all/crio.yml`:
+
+```yaml
+crio_registries:
+  - prefix: docker.io
+    insecure: false
+    blocked: false
+    location: registry-1.docker.io
+    unqualified: false
+    mirrors:
+      - location: mirror.gcr.io
+        insecure: false
+      - location: 192.168.100.100:5000
+        insecure: true
+```
+
+Enable insecure (HTTP) registries:
+
+```yaml
+crio_insecure_registries:
+  - 10.0.0.2:5000
+```
+
+Configure authentication for registries:
+
+```yaml
+crio_registry_auth:
+  - registry: 10.0.0.2:5000
+    username: user
+    password: pass
+```
+
+### User namespaces
+
+CRI-O supports user namespaces for container isolation. Enable by configuring the runtime and enabling remapping:
+
+```yaml
+crio_runtimes:
+  - name: runc
+    path: /usr/bin/runc
+    type: oci
+    root: /run/runc
+    allowed_annotations:
+      - "io.kubernetes.cri-o.userns-mode"
+
+crio_remap_enable: true
+```
+
+`crio_remap_enable` adds an entry for the `containers` user to `/etc/subuid` and `/etc/subgid`. By default, 16 million UIDs and GIDs (256 pods × 65,536 UIDs/GIDs) are reserved at the end of the UID/GID space.
+
+### Default capabilities
+
+CRI-O applies a default set of Linux capabilities to all containers:
+
+```yaml
+crio_default_capabilities:
+  - CHOWN
+  - DAC_OVERRIDE
+  - FSETID
+  - FOWNER
+  - SETGID
+  - SETUID
+  - SETPCAP
+  - NET_BIND_SERVICE
+  - KILL
+```
+
+Add `MKNOD` to the list for Rancher deployments.
+
+### Node Resource Interface (NRI)
+
+Enable NRI on CRI-O v1.26.0 or later:
+
+```yaml
+nri_enabled: true
+```
+
+## Docker
+
+Docker support uses `cri-dockerd`, a CRI shim maintained by Mirantis. The original `dockershim` was removed in Kubernetes 1.24, and Kubespray replaced it with `cri-dockerd` in release 2.20.
+
+### Basic configuration
+
+```yaml
+# group_vars/k8s_cluster/k8s-cluster.yml
+container_manager: docker
+```
+
+### Storage driver
+
+```yaml
+docker_storage_options: -s overlay2
+```
+
+### Cgroup driver
+
+```yaml
+# Valid values: systemd (default), cgroupfs
+docker_cgroup_driver: systemd
+```
+
+### Registry mirrors and insecure registries
+
+```yaml
+docker_registry_mirrors:
+  - https://registry.docker-cn.com
+  - https://mirror.aliyuncs.com
+
+docker_insecure_registries:
+  - mirror.registry.io
+  - 172.19.16.11
+```
+
+### Data directory
+
+```yaml
+docker_daemon_graph: "/var/lib/docker"
+```
+
+### Log rotation
+
+```yaml
+# Rotate logs at 50 MB, keep last 5 files
+docker_log_opts: "--log-opt max-size=50m --log-opt max-file=5"
+```
+
+### iptables
+
+```yaml
+docker_iptables_enabled: "false"
+```
+
+### DNS server limit
+
+If your nodes have more than 3 nameservers in `/etc/resolv.conf`, Docker will fail to start. Set this to `false` to avoid a deployment failure:
+
+```yaml
+docker_dns_servers_strict: false
+```
+
+### Extra daemon options
+
+```yaml
+docker_options: "--live-restore"
+```
+
+## Runtime and Kubernetes version alignment
+
+Each Kubernetes release has a tested set of container runtime versions. The table below shows general guidance — always refer to the Kubespray release notes for the specific versions tested for your target Kubernetes version.
+
+| Kubernetes version | containerd | CRI-O | Docker (cri-dockerd) |
+|---|---|---|---|
+| 1.31.x | 1.7.x, 2.x | 1.31.x | 27.x |
+| 1.30.x | 1.7.x | 1.30.x | 26.x |
+| 1.29.x | 1.7.x | 1.29.x | 25.x |
+
+<Tip>
+  CRI-O version numbers track Kubernetes minor versions by convention. For example, CRI-O 1.31.x is tested with Kubernetes 1.31.x. containerd does not follow this convention and a single containerd minor version often supports multiple Kubernetes minor versions.
+</Tip>
+
+## cgroup driver alignment
+
+The kubelet cgroup driver must match the container runtime's cgroup driver. Kubespray auto-detects this by default:
+
+```yaml
+# Override only if auto-detection produces incorrect results
+kubelet_cgroup_driver: systemd
+```
+
+`systemd` is the preferred driver for containerd. Use `cgroupfs` only when running on cgroups v1 with kata-containers or other runtimes that have known issues with the `systemd` driver.

@@ -1,0 +1,79 @@
+---
+title: "HTTP Proxy Configuration for Kubespray Deployments"
+description: "Configure HTTP and HTTPS proxy settings, custom CA certificates, and no_proxy exclusions for Kubespray-managed nodes in restricted network environments."
+keywords: ["HTTP proxy", "https_proxy", "no_proxy", "air-gapped", "Kubespray proxy", "additional_no_proxy"]
+---
+
+In environments where nodes cannot reach the internet directly, Kubespray supports configuring an HTTP or HTTPS proxy for all nodes and load balancers. When you set `http_proxy` or `https_proxy`, Kubespray automatically generates a `no_proxy` list that excludes all cluster nodes and load balancers so that intra-cluster traffic bypasses the proxy.
+
+## Setting the proxy
+
+Set the proxy addresses in your inventory variables:
+
+```yaml inventory/group_vars/all/all.yml
+http_proxy: "http://example.proxy.tld:3128"
+https_proxy: "http://example.proxy.tld:3128"
+```
+
+Both variables accept a full URL including scheme and port. Most HTTPS proxies are accessed over plain HTTP, so it is common for both values to share the same URL.
+
+## Custom CA certificate
+
+If your proxy performs TLS inspection with a custom certificate authority, the CA certificate must already be present on each target node. Point Kubespray at it with:
+
+```yaml inventory/group_vars/all/all.yml
+https_proxy_cert_file: /path/to/host/custom/ca.crt
+```
+
+<Warning>
+  The CA file path is evaluated on the **target node**, not the Ansible controller. Ensure the file is deployed to each node before running the Kubespray playbooks.
+</Warning>
+
+## no_proxy exclusions
+
+By default, Kubespray builds the `no_proxy` list automatically from all cluster node addresses and load-balancer IPs so that intra-cluster communication always travels directly.
+
+### Adding extra exclusions
+
+To add hosts or CIDRs to the automatically generated `no_proxy` list without replacing it:
+
+```yaml inventory/group_vars/all/all.yml
+additional_no_proxy: "registry.internal.example.com,10.0.0.0/8"
+```
+
+### Fully overriding no_proxy
+
+If you need complete control over the `no_proxy` value and want to prevent Kubespray from appending node addresses automatically, set `no_proxy` directly:
+
+```yaml inventory/group_vars/all/all.yml
+no_proxy: "node1,192.168.1.10,node2,192.168.1.11,additional_host"
+```
+
+<Warning>
+  When `no_proxy` is set explicitly, no cluster node or load-balancer address is added automatically. You are responsible for including all addresses that should bypass the proxy.
+</Warning>
+
+### Excluding worker nodes from no_proxy
+
+By default, worker node addresses are included in the generated `no_proxy` list. This means that whenever a worker is added or removed, the proxy environment variable changes and the container runtime must be restarted — which also restarts all pods on those nodes.
+
+To limit automatic `no_proxy` entries to control-plane nodes only and avoid disruptive restarts when scaling workers:
+
+```yaml inventory/group_vars/all/all.yml
+no_proxy_exclude_workers: true
+```
+
+<Note>
+  With `no_proxy_exclude_workers: true`, traffic from control-plane nodes to workers will still bypass the proxy (because workers are reachable directly), but the `no_proxy` variable on each node will only list control-plane addresses. Verify that your applications do not need direct node-to-node communication that would be incorrectly proxied.
+</Note>
+
+## Summary of proxy variables
+
+| Variable | Purpose |
+|---|---|
+| `http_proxy` | Proxy URL for HTTP traffic |
+| `https_proxy` | Proxy URL for HTTPS traffic |
+| `https_proxy_cert_file` | Path to a custom CA certificate on target nodes |
+| `no_proxy` | Fully overrides the generated no_proxy list |
+| `additional_no_proxy` | Appends entries to the generated no_proxy list |
+| `no_proxy_exclude_workers` | Excludes worker node addresses from no_proxy generation |

@@ -1,0 +1,226 @@
+---
+title: "Ansible tags reference for partial Kubespray playbook runs"
+description: "Reference every Ansible tag in Kubespray playbooks and learn how to use --tags and --skip-tags to target specific installation phases."
+---
+
+Kubespray's playbooks are structured so that every logical step carries one or more Ansible tags. This lets you target a specific part of the cluster lifecycle — for example, reconfiguring DNS, reinstalling a CNI plugin, or downloading container images — without running the entire playbook. Understanding the tag taxonomy helps you iterate faster during development and perform surgical changes in production.
+
+<Warning>
+  Use `--tags` and `--skip-tags` only when you are certain which tasks will be affected. Skipping prerequisite tasks can leave the cluster in an inconsistent state.
+</Warning>
+
+## Using tags
+
+Pass `--tags` to run only the tasks that carry those tags. Pass `--skip-tags` to exclude tasks carrying those tags. Both flags accept a comma-separated list.
+
+```bash
+ansible-playbook -i inventory/sample/hosts.ini cluster.yml --tags TAG1,TAG2
+ansible-playbook -i inventory/sample/hosts.ini cluster.yml --skip-tags TAG1,TAG2
+```
+
+Combining both flags lets you narrow the scope precisely:
+
+```bash
+ansible-playbook -i inventory/sample/hosts.ini cluster.yml \
+    --tags preinstall,facts \
+    --skip-tags download,bootstrap_os
+```
+
+## Complete tag reference
+
+### OS and host preparation
+
+| Tag | Purpose |
+|---|---|
+| `bootstrap_os` | All host OS configuration tasks |
+| `preinstall` | Preliminary configuration steps run before component installation |
+| `facts` | Gathering facts and miscellaneous check results |
+| `system-packages` | Install packages using the OS package manager |
+| `etchosts` | Configure `/etc/hosts` entries on all hosts |
+| `resolvconf` | Configure `/etc/resolv.conf` for hosts and applications |
+| `localhost` | Steps run specifically on the Ansible controller node |
+| `bastion` | Set up SSH config for bastion host access |
+
+### Container runtimes
+
+| Tag | Purpose |
+|---|---|
+| `container-engine` | Configuring container engines (umbrella tag) |
+| `container-runtimes` | Configuring container runtimes (umbrella tag) |
+| `containerd` | Configure containerd engine runtime |
+| `crio` | Configure CRI-O container engine |
+| `docker` | Configure Docker engine runtime |
+| `container_engine_accelerator` | Enable NVIDIA accelerator for runtimes |
+| `nvidia_gpu` | Enable NVIDIA GPU accelerator |
+| `crun` | Configure crun OCI runtime |
+| `gvisor` | Configure gVisor sandbox runtime |
+| `kata-containers` | Configure Kata Containers runtime |
+| `youki` | Configure youki container runtime |
+
+### Kubernetes control plane
+
+| Tag | Purpose |
+|---|---|
+| `control-plane` | Configure Kubernetes control-plane node role |
+| `kubeadm` | All tasks linked to kubeadm |
+| `kube-apiserver` | Configure the kube-apiserver static pod |
+| `kube-controller-manager` | Configure the kube-controller-manager static pod |
+| `kube-proxy` | Configure the kube-proxy static pod |
+| `kubelet` | Configure the kubelet service |
+| `kubectl` | Install kubectl and bash completion |
+| `client` | Kubernetes clients role |
+| `cluster-roles` | Configure cluster-wide applications (PSP, etc.) |
+| `node-label` | Tasks linked to labelling nodes |
+| `node-webhook` | Tasks linked to webhook (granting access to resources) |
+| `k8s-pre-upgrade` | Pre-upgrade tasks for the Kubernetes cluster |
+
+### Worker nodes
+
+| Tag | Purpose |
+|---|---|
+| `node` | Configure Kubernetes worker node role |
+| `init` | Windows Kubernetes node initialisation |
+| `win_nodes` | Windows-specific tasks |
+
+### etcd
+
+| Tag | Purpose |
+|---|---|
+| `etcd` | Configure the etcd cluster |
+| `etcd-secrets` | Configure etcd certificates and keys |
+
+### Networking (CNI plugins)
+
+| Tag | Purpose |
+|---|---|
+| `network` | Configuring networking plugins (umbrella tag) |
+| `cni` | CNI plugins for network plugins |
+| `calico` | Network plugin: Calico |
+| `calico_rr` | Configure Calico route reflector |
+| `policy-controller` | Configure Calico policy controller |
+| `cilium` | Network plugin: Cilium |
+| `flannel` | Network plugin: flannel |
+| `kube-ovn` | Network plugin: kube-ovn |
+| `kube-router` | Network plugin: kube-router |
+| `macvlan` | Network plugin: macvlan |
+| `multus` | Network plugin: Multus |
+| `annotate` | Create kube-router annotation |
+| `nginx` | Configure nginx load balancer for kube-apiserver instances |
+| `nodelocaldns` | Configure nodelocaldns daemonset |
+| `coredns` | Configure CoreDNS deployment |
+| `dns` | Remove DNS entries when resetting |
+
+### Downloads and upgrades
+
+| Tag | Purpose |
+|---|---|
+| `download` | Fetch container images to the delegate host |
+| `upload` | Distribute images and binaries across cluster hosts |
+| `upgrade` | Upgrading container images and binaries |
+| `pre-upgrade` | Tasks run before an upgrade operation |
+| `post-upgrade` | Tasks run after an upgrade operation |
+| `asserts` | Check tasks for the download role |
+
+### Storage and volumes
+
+| Tag | Purpose |
+|---|---|
+| `csi-driver` | Configure CSI driver (umbrella tag) |
+| `aws-ebs-csi-driver` | Configure AWS EBS CSI driver |
+| `azure-csi-driver` | Configure Azure CSI driver |
+| `cinder-csi-driver` | Configure Cinder CSI driver |
+| `gcp-pd-csi-driver` | Configure GCP PD CSI driver |
+| `vsphere-csi-driver` | Configure vSphere CSI driver |
+| `persistent_volumes` | Configure CSI volumes |
+| `persistent_volumes_aws_ebs_csi` | Configure AWS EBS CSI volumes |
+| `persistent_volumes_cinder_csi` | Configure Cinder CSI volumes |
+| `persistent_volumes_gcp_pd_csi` | Configure GCP PD CSI volumes |
+| `persistent_volumes_openstack` | Configure OpenStack CSI volumes |
+| `snapshot` | Enable CSI snapshot support |
+| `snapshot-controller` | Configure CSI snapshot controller |
+| `local-path-provisioner` | Configure local-path external provisioner |
+| `local-volume-provisioner` | Configure local-volume external provisioner |
+| `registry` | Configure local Docker registry |
+
+### Cloud providers
+
+| Tag | Purpose |
+|---|---|
+| `cloud-provider` | Cloud-provider related tasks |
+| `external-cloud-controller` | Configure cloud controllers |
+| `external-provisioner` | Configure external provisioners |
+| `external-openstack` | Cloud controller: OpenStack |
+| `external-vsphere` | Cloud controller: vSphere |
+| `gce` | Cloud provider: GCP |
+| `oci` | Cloud provider: OCI |
+
+### Add-ons and applications
+
+| Tag | Purpose |
+|---|---|
+| `apps` | Kubernetes application definitions |
+| `helm` | Install and configure Helm |
+| `cert-manager` | Configure cert-manager |
+| `ingress-controller` | Configure ingress controllers |
+| `ingress_alb` | AWS ALB ingress controller |
+| `kube-vip` | Install and configure kube-vip |
+| `metallb` | Install and configure MetalLB |
+| `metrics_server` | Configure metrics-server |
+| `netchecker` | Install the k8s-netchecker application |
+
+### Reset and removal
+
+| Tag | Purpose |
+|---|---|
+| `reset` | All tasks that perform a node reset |
+| `pre-remove` | Tasks run before a remove operation |
+| `post-remove` | Tasks run after a remove operation |
+| `files` | Remove files when resetting |
+| `services` | Remove services (etcd, kubelet, etc.) when resetting |
+| `iptables` | Flush and clear iptables when resetting |
+| `mounts` | Unmount kubelet directories when resetting |
+
+## Practical examples
+
+### Reconfigure DNS only
+
+Apply only DNS configuration tasks, skipping OS bootstrap and image downloads:
+
+```bash
+ansible-playbook -i inventory/sample/hosts.ini cluster.yml \
+    --tags preinstall,facts \
+    --skip-tags download,bootstrap_os
+```
+
+### Remove the cluster DNS resolver from /etc/resolv.conf
+
+```bash
+ansible-playbook -i inventory/sample/hosts.ini \
+    -e dns_mode='none' cluster.yml --tags resolvconf
+```
+
+### Pre-pull all container images locally
+
+Download and cache all images on the Ansible controller without installing anything on cluster nodes:
+
+```bash
+ansible-playbook -i inventory/sample/hosts.ini cluster.yml \
+    -e download_run_once=true \
+    -e download_localhost=true \
+    --tags download \
+    --skip-tags upload,upgrade
+```
+
+### Reinstall a specific CNI plugin
+
+```bash
+ansible-playbook -i inventory/sample/hosts.ini cluster.yml \
+    --tags calico,network,facts
+```
+
+### Upgrade only the etcd cluster
+
+```bash
+ansible-playbook -i inventory/sample/hosts.ini upgrade-cluster.yml \
+    --tags etcd,upgrade
+```

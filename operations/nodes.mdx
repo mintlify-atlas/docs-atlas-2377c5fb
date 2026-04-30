@@ -1,0 +1,277 @@
+---
+title: 'Adding, Replacing, and Removing Cluster Nodes'
+description: 'Add, replace, and remove worker nodes, control plane nodes, and etcd members using Kubespray playbooks including scale.yml and remove-node.yml.'
+keywords: ['nodes', 'scale', 'add node', 'remove node', 'control plane', 'etcd', 'scale.yml', 'remove-node.yml']
+---
+
+Kubespray provides dedicated playbooks for managing cluster membership over the lifetime of a deployment. You can add new worker nodes with `scale.yml`, expand the control plane with `cluster.yml`, and remove any node type gracefully with `remove-node.yml`. This page walks through each scenario in detail.
+
+## Adding or replacing a worker node
+
+Adding a worker node is the simplest scaling operation.
+
+<Steps>
+  <Step title="Add the new node to your inventory">
+    Append the new host to the appropriate groups in your inventory file (`hosts.ini` or `hosts.yaml`).
+  </Step>
+  <Step title="Refresh the facts cache">
+    Before using `--limit`, run `facts.yml` without a limit to ensure all node facts are current:
+
+    ```bash
+    ansible-playbook playbooks/facts.yml -b -i inventory/sample/hosts.ini
+    ```
+  </Step>
+  <Step title="Run scale.yml">
+    Use `--limit` to target only the new node and avoid touching existing nodes:
+
+    ```bash
+    ansible-playbook scale.yml -b \
+      -i inventory/sample/hosts.ini \
+      --limit=NODE_NAME
+    ```
+  </Step>
+  <Step title="Remove the old node (replacement only)">
+    If you are replacing a node, run `remove-node.yml` with the old node still in your inventory. Pass `-e node=NODE_NAME` to limit execution to that node:
+
+    ```bash
+    ansible-playbook remove-node.yml -b \
+      -i inventory/sample/hosts.ini \
+      -e node=NODE_NAME
+    ```
+
+    If the node is offline, add the following flags:
+
+    ```bash
+    ansible-playbook remove-node.yml -b \
+      -i inventory/sample/hosts.ini \
+      -e node=NODE_NAME \
+      -e reset_nodes=false \
+      -e allow_ungraceful_removal=true
+    ```
+  </Step>
+  <Step title="Remove the node from your inventory">
+    Delete the removed node's entry from your inventory file.
+  </Step>
+</Steps>
+
+## Adding or replacing a control plane node
+
+<Warning>
+  You cannot use `scale.yml` to add control plane nodes. Always use `cluster.yml`. Also, always append new control plane nodes to the **end** of the `kube_control_plane` group — adding them in the first position is not supported and will cause the playbook to fail.
+</Warning>
+
+<Steps>
+  <Step title="Append the new host to your inventory and run cluster.yml">
+    ```bash
+    ansible-playbook cluster.yml -b -i inventory/sample/hosts.ini
+    ```
+  </Step>
+  <Step title="Restart the nginx-proxy pod on all hosts">
+    The nginx-proxy pod is a local proxy for the apiserver. Kubespray updates its static config, but the pod must be restarted to reload it. Run this on every host in the cluster:
+
+    <Tabs>
+      <Tab title="containerd">
+        ```bash
+        crictl ps | grep nginx-proxy | awk '{print $1}' | xargs crictl stop
+        ```
+      </Tab>
+      <Tab title="Docker">
+        ```bash
+        docker ps | grep k8s_nginx-proxy_nginx-proxy | awk '{print $1}' | xargs docker restart
+        ```
+      </Tab>
+    </Tabs>
+  </Step>
+  <Step title="Remove the old control plane node">
+    With the old node still in inventory, run `remove-node.yml`:
+
+    ```bash
+    ansible-playbook remove-node.yml -b \
+      -i inventory/sample/hosts.ini \
+      -e node=NODE_NAME
+    ```
+  </Step>
+</Steps>
+
+## Removing or replacing the first control plane node
+
+Kubespray does not support directly removing the first node in the `kube_control_plane` and `etcd` groups. To do so, you must first move it to a non-first position.
+
+<Steps>
+  <Step title="Reorder the control plane group in your inventory">
+    Move the node you want to remove (`node-1` in this example) to the end of the `kube_control_plane`, `kube_node`, and `etcd` groups:
+
+    <CodeGroup>
+
+    ```yaml Before
+    kube_control_plane:
+      hosts:
+        node-1:
+        node-2:
+        node-3:
+    kube_node:
+      hosts:
+        node-1:
+        node-2:
+        node-3:
+    etcd:
+      hosts:
+        node-1:
+        node-2:
+        node-3:
+    ```
+
+    ```yaml After
+    kube_control_plane:
+      hosts:
+        node-2:
+        node-3:
+        node-1:
+    kube_node:
+      hosts:
+        node-2:
+        node-3:
+        node-1:
+    etcd:
+      hosts:
+        node-2:
+        node-3:
+        node-1:
+    ```
+
+    </CodeGroup>
+  </Step>
+  <Step title="Run upgrade-cluster.yml or cluster.yml">
+    ```bash
+    ansible-playbook upgrade-cluster.yml -b -i inventory/sample/hosts.ini
+    ```
+  </Step>
+  <Step title="Remove the old first control plane node">
+    ```bash
+    ansible-playbook remove-node.yml -b \
+      -i inventory/sample/hosts.ini \
+      -e node=node-1
+    ```
+  </Step>
+  <Step title="Update the cluster-info configmap">
+    ```bash
+    kubectl edit cm -n kube-public cluster-info
+    ```
+
+    Update the `server` field to point to an active control plane node IP. If you rotated certificates, also update `certificate-authority-data`.
+  </Step>
+  <Step title="Add the replacement control plane node">
+    Update your inventory if needed, then run `cluster.yml` targeting only the control plane:
+
+    ```bash
+    ansible-playbook cluster.yml -b \
+      -i inventory/sample/hosts.ini \
+      --limit=kube_control_plane
+    ```
+  </Step>
+</Steps>
+
+## Adding an etcd node
+
+etcd requires an odd number of members for quorum. Adding or removing etcd nodes must always keep the total count odd.
+
+<Steps>
+  <Step title="Update your inventory and run cluster.yml">
+    Add the new node to the `etcd` group, then run `cluster.yml` with the etcd and control plane limit:
+
+    ```bash
+    ansible-playbook cluster.yml -b \
+      -i inventory/sample/hosts.ini \
+      --limit=etcd,kube_control_plane \
+      -e ignore_assert_errors=yes
+    ```
+
+    <Note>
+      If the node you want to add as an etcd node is already a worker or control plane node, remove it with `remove-node.yml` first.
+    </Note>
+  </Step>
+  <Step title="Run upgrade-cluster.yml to update all etcd configuration">
+    ```bash
+    ansible-playbook upgrade-cluster.yml -b \
+      -i inventory/sample/hosts.ini \
+      --limit=etcd,kube_control_plane \
+      -e ignore_assert_errors=yes
+    ```
+
+    <Tip>
+      If adding multiple etcd nodes in one run, append `-e etcd_retries=10` to increase the number of retries between each node join. Otherwise the cluster may fail while still processing the first join.
+    </Tip>
+  </Step>
+  <Step title="Update the apiserver configuration">
+    On every control plane node, edit `/etc/kubernetes/manifests/kube-apiserver.yaml` and ensure the new etcd nodes appear in the `--etcd-servers=...` command line parameter.
+  </Step>
+</Steps>
+
+## Removing an etcd node
+
+<Steps>
+  <Step title="Run remove-node.yml with the node still in inventory">
+    ```bash
+    ansible-playbook remove-node.yml -b \
+      -i inventory/sample/hosts.ini \
+      -e node=NODE_NAME
+    ```
+
+    For offline nodes, add `-e reset_nodes=false -e allow_ungraceful_removal=true`.
+  </Step>
+  <Step title="Remove the node from your inventory">
+    Delete `NODE_NAME` from your inventory file.
+  </Step>
+  <Step title="Regenerate configuration files">
+    Run `cluster.yml` to regenerate configuration files on all remaining nodes with the updated etcd member list:
+
+    ```bash
+    ansible-playbook cluster.yml -b -i inventory/sample/hosts.ini
+    ```
+  </Step>
+  <Step title="Update the apiserver configuration">
+    On every control plane node, edit `/etc/kubernetes/manifests/kube-apiserver.yaml`. Remove the old etcd node from the `--etcd-servers=...` command line parameter so only active members remain.
+  </Step>
+  <Step title="Shut down the old instance">
+    Power off or decommission the removed etcd node.
+  </Step>
+</Steps>
+
+## Recovering the control plane
+
+If one or more control plane nodes suffer unrecoverable failures (hardware failure, failed patching, etcd database corruption), use the `recover-control-plane.yml` playbook.
+
+<Warning>
+  You need at least one functional control plane node to recover using this method.
+</Warning>
+
+**Preparation steps:**
+
+1. Back up what you can from the affected nodes.
+2. Provision new replacement nodes.
+3. In your inventory, copy broken etcd nodes into the `broken_etcd` group and set `etcd_member_name` for each.
+4. Copy broken control plane nodes into the `broken_kube_control_plane` group.
+5. Place surviving nodes first in the `etcd` and `kube_control_plane` groups, followed by the new replacement nodes.
+
+Then run the playbook:
+
+```bash
+ansible-playbook recover-control-plane.yml -b \
+  -i inventory/sample/hosts.ini \
+  --limit etcd,kube_control_plane \
+  -e etcd_retries=10
+```
+
+### Recovering from lost quorum
+
+When etcd quorum is lost, the playbook takes a snapshot from the first node in the `etcd` group and restores from it. To restore from a specific snapshot instead:
+
+```bash
+ansible-playbook recover-control-plane.yml -b \
+  -i inventory/sample/hosts.ini \
+  -e etcd_snapshot=/tmp/etcd_snapshot
+```
+
+<Note>
+  The recovery playbook has only been tested with small etcd databases. There may be disruptions during recovery, and there are no guarantees of success. When possible, test the recovery procedure on a similarly broken non-production cluster first.
+</Note>

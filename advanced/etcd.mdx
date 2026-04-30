@@ -1,0 +1,140 @@
+---
+title: "etcd Deployment, Metrics, and Tuning in Kubespray"
+description: "Configure etcd deployment types, expose Prometheus metrics, and integrate with kube-prometheus-stack for production Kubernetes clusters managed by Kubespray."
+keywords: ["etcd", "etcd deployment", "etcd metrics", "kubeadm etcd", "Kubespray etcd", "Prometheus etcd"]
+---
+
+etcd is the persistent backing store for all Kubernetes cluster state. Kubespray supports three deployment strategies for etcd and provides first-class configuration for exposing metrics to Prometheus-compatible monitoring systems.
+
+## Deployment types
+
+Set `etcd_deployment_type` in your inventory to choose how etcd is installed and managed. The default is `host`.
+
+<Tabs>
+  <Tab title="host (default)">
+    etcd is installed as a `systemd` service directly on the etcd group members. This is the recommended approach for production clusters because it avoids an additional container runtime dependency and provides the most straightforward operational model.
+
+    ```yaml inventory/group_vars/etcd/etcd.yml
+    etcd_deployment_type: host
+    ```
+  </Tab>
+  <Tab title="docker">
+    etcd runs inside Docker containers on the etcd group members. Only usable when `container_manager` is set to `docker`.
+
+    ```yaml inventory/group_vars/etcd/etcd.yml
+    etcd_deployment_type: docker
+    ```
+  </Tab>
+  <Tab title="kubeadm">
+    etcd is deployed as a static pod on control-plane hosts, managed by kubeadm. This method is experimental and is only available for new deployments — it cannot be applied to an existing cluster.
+
+    ```yaml inventory/group_vars/etcd/etcd.yml
+    etcd_deployment_type: kubeadm
+    ```
+
+    <Warning>
+      The `kubeadm` deployment type is experimental. Do not use it for existing production clusters.
+    </Warning>
+  </Tab>
+</Tabs>
+
+## Metrics
+
+etcd exposes a Prometheus-compatible metrics endpoint. Kubespray can configure a dedicated HTTP port for metrics and create a Kubernetes `Service` and `Endpoints` object so that in-cluster scrape targets can discover etcd.
+
+### Exposing metrics on a separate port
+
+```yaml inventory/group_vars/etcd/etcd.yml
+etcd_metrics_port: 2381
+```
+
+To override the full listen URL (for example to bind to specific node IPs):
+
+```yaml inventory/group_vars/etcd/etcd.yml
+etcd_listen_metrics_urls: "http://0.0.0.0:2381"
+```
+
+### Creating a Kubernetes service for metrics
+
+Define labels on the `etcd-metrics` service to make it discoverable by your monitoring stack. The example below uses labels compatible with `kube-prometheus-stack`:
+
+```yaml inventory/group_vars/etcd/etcd.yml
+etcd_metrics_service_labels:
+  k8s-app: etcd
+  app.kubernetes.io/managed-by: Kubespray
+  app: kube-prometheus-stack-kube-etcd
+  release: kube-prometheus-stack
+```
+
+This creates an `etcd-metrics` service and associated `Endpoints` in the `kube-system` namespace. The `release` label must match your Helm release name.
+
+### Integrating with kube-prometheus-stack
+
+When deploying `kube-prometheus-stack`, disable its built-in etcd service so Kubespray's service is used instead:
+
+```yaml helm-values.yaml
+kubeEtcd:
+  service:
+    enabled: false
+```
+
+If you bind `etcd_listen_metrics_urls` to specific node IPs, configure kube-prometheus-stack to scrape those endpoints directly:
+
+```yaml helm-values.yaml
+kubeEtcd:
+  enabled: true
+  endpoints:
+    - 10.141.4.22
+    - 10.141.4.23
+    - 10.141.4.24
+```
+
+<Note>
+  Adjust the `release` label and endpoint IPs to match your environment. If your Helm release name differs from `kube-prometheus-stack`, update the `release` label in `etcd_metrics_service_labels` accordingly.
+</Note>
+
+## etcd event separation
+
+For large clusters, separating Kubernetes event storage into a dedicated etcd instance reduces write pressure on the main etcd cluster. Enable this before initial deployment:
+
+```yaml inventory/group_vars/k8s_cluster/k8s-cluster.yml
+etcd_events_cluster_setup: true
+```
+
+<Tip>
+  Event separation is particularly beneficial in clusters with frequent pod scheduling activity (CI/CD workloads, autoscalers) where event volume can saturate etcd write throughput.
+</Tip>
+
+## etcd cluster topology
+
+Kubespray maps etcd members to the `etcd` inventory group. For a stacked topology (etcd co-located on control-plane nodes), ensure the `etcd` group contains the same hosts as `kube_control_plane`:
+
+```ini inventory/hosts.ini
+[kube_control_plane]
+master1 ansible_host=192.168.1.10
+master2 ansible_host=192.168.1.11
+master3 ansible_host=192.168.1.12
+
+[etcd]
+master1 ansible_host=192.168.1.10
+master2 ansible_host=192.168.1.11
+master3 ansible_host=192.168.1.12
+```
+
+For an external etcd topology, place dedicated etcd hosts in the `etcd` group and keep them out of `kube_control_plane`:
+
+```ini inventory/hosts.ini
+[kube_control_plane]
+master1 ansible_host=192.168.1.10
+master2 ansible_host=192.168.1.11
+master3 ansible_host=192.168.1.12
+
+[etcd]
+etcd1 ansible_host=192.168.1.20
+etcd2 ansible_host=192.168.1.21
+etcd3 ansible_host=192.168.1.22
+```
+
+<Note>
+  etcd requires a quorum of `(n/2)+1` members to elect a leader. Always run an odd number of etcd members — 3 or 5 for production clusters.
+</Note>

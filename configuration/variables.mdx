@@ -1,0 +1,333 @@
+---
+title: "Key Configuration Variables in Kubespray"
+description: "Reference for key Kubespray Ansible variables by category: Kubernetes version, networking, container runtime, DNS, kubelet, and security settings."
+keywords: ["kubespray", "variables", "ansible", "kube_version", "kube_network_plugin", "container_manager", "group_vars"]
+---
+
+Kubespray exposes hundreds of Ansible variables that control every aspect of cluster deployment. Most variables have sensible defaults defined in role `defaults/main.yml` files, and you override them in your inventory's `group_vars/` directory. This page documents the most important variables organized by category.
+
+## Kubernetes version and core settings
+
+These variables control which Kubernetes version is deployed and fundamental cluster identity.
+
+<ParamField path="kube_version" type="string">
+  The Kubernetes version to install, for example `v1.31.0`. Pin this to a specific version in production to ensure reproducible deployments. Set in `group_vars/k8s_cluster/k8s-cluster.yml`.
+</ParamField>
+
+<ParamField path="cluster_name" type="string" default="cluster.local">
+  The cluster name, also used as the DNS domain. Changing this after deployment is not supported.
+</ParamField>
+
+<ParamField path="kube_owner" type="string" default="kube">
+  The OS user that owns the cluster installation. Set to `root` when using Cilium in unprivileged mode.
+</ParamField>
+
+<ParamField path="kube_log_level" type="integer" default="2">
+  Kubernetes component log verbosity level (0–5). Increase to `4` or `5` for debugging.
+</ParamField>
+
+## Networking
+
+These variables define the cluster's network topology, IP ranges, and proxy mode.
+
+<ParamField path="kube_network_plugin" type="string" default="calico">
+  The CNI plugin to install. Supported values: `calico`, `cilium`, `flannel`, `kube-ovn`, `kube-router`, `cni` (custom). Set in `group_vars/k8s_cluster/k8s-cluster.yml`.
+
+  ```yaml
+  kube_network_plugin: calico
+  ```
+</ParamField>
+
+<ParamField path="kube_service_addresses" type="string" default="10.233.0.0/18">
+  Subnet for Kubernetes Service ClusterIPs. Must not overlap with `kube_pods_subnet` or any existing network in your infrastructure.
+
+  ```yaml
+  kube_service_addresses: 10.233.0.0/18
+  ```
+</ParamField>
+
+<ParamField path="kube_pods_subnet" type="string" default="10.233.64.0/18">
+  Subnet for pod IP addresses. Must not overlap with `kube_service_addresses`. If your cloud provider uses `10.233.0.0/16`, switch to a different range such as `172.18.0.0/16`.
+
+  ```yaml
+  kube_pods_subnet: 10.233.64.0/18
+  ```
+</ParamField>
+
+<ParamField path="kube_network_node_prefix" type="integer" default="24">
+  Prefix length for the per-node pod subnet allocated from `kube_pods_subnet`. A `/24` gives each node 254 pod IPs. Up to 64 nodes fit in a `/18` pod subnet with this setting.
+
+  ```yaml
+  # Up to 64 nodes, up to 254 pods per node:
+  kube_pods_subnet: 10.233.64.0/18
+  kube_network_node_prefix: 24
+  ```
+</ParamField>
+
+<ParamField path="kube_proxy_mode" type="string" default="ipvs">
+  The kube-proxy mode. Valid values are `ipvs`, `iptables`, and `nftables`. IPVS is the default and recommended for production.
+
+  ```yaml
+  kube_proxy_mode: ipvs
+  ```
+</ParamField>
+
+<ParamField path="kube_proxy_strict_arp" type="boolean" default="false">
+  Configures `arp_ignore` and `arp_announce` sysctl values. Must be set to `true` when using MetalLB or kube-vip in ARP mode.
+</ParamField>
+
+### Dual-stack and IPv6
+
+<ParamField path="ipv4_stack" type="boolean" default="true">
+  Enables IPv4 networking. IPv4 has priority in dual-stack mode.
+</ParamField>
+
+<ParamField path="ipv6_stack" type="boolean" default="false">
+  Set to `true` to enable IPv6. Set both `ipv4_stack` and `ipv6_stack` to `true` for dual-stack. Set only `ipv6_stack` to `true` (and `ipv4_stack` to `false`) for IPv6-only clusters.
+</ParamField>
+
+<ParamField path="kube_service_addresses_ipv6" type="string" default="fd85:ee78:d8a6:8607::1000/116">
+  IPv6 subnet for Service ClusterIPs. Only used when `ipv6_stack` is `true`.
+</ParamField>
+
+<ParamField path="kube_pods_subnet_ipv6" type="string" default="fd85:ee78:d8a6:8607::1:0000/112">
+  IPv6 subnet for pod IP addresses. Only used when `ipv6_stack` is `true`.
+</ParamField>
+
+## Container runtime
+
+<ParamField path="container_manager" type="string" default="containerd">
+  The container runtime to install on all nodes. Valid values are `containerd`, `crio`, and `docker`. This must be set consistently across all nodes.
+
+  ```yaml
+  container_manager: containerd
+  ```
+</ParamField>
+
+<ParamField path="containerd_version" type="string">
+  The version of containerd to install when `container_manager` is set to `containerd`.
+</ParamField>
+
+<ParamField path="containerd_default_runtime" type="string">
+  Overrides the default containerd runtime used by the Kubernetes CRI plugin. When unset, the `runc` runtime is used.
+</ParamField>
+
+<ParamField path="containerd_additional_runtimes" type="list">
+  A list of additional containerd runtime configurations for use with Kubernetes `RuntimeClass` objects.
+
+  ```yaml
+  containerd_additional_runtimes:
+    - name: kata
+      type: "io.containerd.kata.v2"
+      options: {}
+  ```
+</ParamField>
+
+<ParamField path="docker_version" type="string">
+  The version of Docker to install when `container_manager` is `docker`. Must match one of the keys in `roles/container-engine/docker/vars/*.yml`.
+</ParamField>
+
+## etcd
+
+<ParamField path="etcd_version" type="string">
+  The version of etcd to deploy. Kubespray sets a tested default aligned with the target Kubernetes version; only override this when you have a specific requirement.
+</ParamField>
+
+<ParamField path="etcd_deployment_type" type="string" default="kubeadm">
+  How etcd is deployed. Use `host` for a host binary deployment (required for CRI-O) or `kubeadm` for kubeadm-managed etcd.
+
+  ```yaml
+  # Required when using CRI-O:
+  etcd_deployment_type: host
+  ```
+</ParamField>
+
+## DNS
+
+By default, Kubespray sets `8.8.8.8` as the upstream DNS server, overriding whatever is in `/etc/resolv.conf` on your nodes. Configure these variables to match your environment.
+
+<ParamField path="upstream_dns_servers" type="list">
+  Upstream DNS servers added to the host configuration in addition to the cluster DNS.
+
+  ```yaml
+  upstream_dns_servers:
+    - 8.8.8.8
+    - 8.8.4.4
+  ```
+</ParamField>
+
+<ParamField path="dns_mode" type="string" default="coredns">
+  The DNS server to deploy for the cluster. Supported values are `coredns`, `coredns_dual`, `manual`, and `none`.
+</ParamField>
+
+<ParamField path="searchdomains" type="list">
+  Additional DNS search domains. Can hold up to 4 entries by default, or 6 when `remove_default_searchdomains` is `true`.
+</ParamField>
+
+<ParamField path="nameservers" type="list">
+  DNS servers configured for use by cluster hosts.
+</ParamField>
+
+<ParamField path="enable_nodelocaldns" type="boolean" default="true">
+  Deploys a NodeLocal DNSCache DaemonSet. This improves DNS performance and reduces load on CoreDNS by caching responses on each node.
+</ParamField>
+
+## Addressing
+
+<ParamField path="ip" type="string">
+  Per-host variable. The IP address used to bind Kubernetes services on a node. Usually the private IP. Set inline in inventory or in `host_vars/`.
+
+  ```ini
+  node1 ansible_host=95.54.0.12 ip=10.3.0.1
+  ```
+</ParamField>
+
+<ParamField path="access_ip" type="string">
+  Per-host variable. The IP address other hosts use to connect to this node. Required in cloud environments with separate public and private IPs.
+</ParamField>
+
+<ParamField path="loadbalancer_apiserver" type="dict">
+  If defined, all hosts use this address to reach the Kubernetes API server instead of connecting to a control plane node directly. Required for HA clusters with an external load balancer.
+
+  ```yaml
+  loadbalancer_apiserver:
+    address: 1.2.3.4
+    port: 6443
+  ```
+</ParamField>
+
+<ParamField path="loadbalancer_apiserver_localhost" type="boolean">
+  Makes all hosts connect to a locally load-balanced API server endpoint. Mutually exclusive with `loadbalancer_apiserver`.
+</ParamField>
+
+## Kubelet
+
+<ParamField path="kubelet_cgroup_driver" type="string">
+  Overrides the cgroup driver for kubelet. By default, auto-detection matches the container manager. `systemd` is preferred for containerd, but may cause issues with cgroups v1 or kata-containers, in which case `cgroupfs` may be appropriate.
+</ParamField>
+
+<ParamField path="kubelet_max_pods" type="integer" default="110">
+  Maximum number of pods per node. Increasing this requires a corresponding adjustment to `kube_network_node_prefix` to ensure enough pod IPs per node.
+</ParamField>
+
+<ParamField path="kubelet_image_gc_high_threshold" type="integer" default="85">
+  Disk usage percentage at which image garbage collection always runs. Must be greater than `kubelet_image_gc_low_threshold`.
+</ParamField>
+
+<ParamField path="kubelet_image_gc_low_threshold" type="integer" default="80">
+  Disk usage percentage below which image garbage collection never runs.
+</ParamField>
+
+<ParamField path="kubelet_rotate_certificates" type="boolean">
+  Enables automatic rotation of kubelet client certificates before they expire.
+</ParamField>
+
+<ParamField path="kubelet_config_extra_args" type="dict">
+  A dictionary of additional kubelet configuration parameters inserted into the kubelet YAML config file.
+
+  ```yaml
+  kubelet_config_extra_args:
+    evictionHard:
+      memory.available: "100Mi"
+    evictionSoft:
+      memory.available: "300Mi"
+    evictionSoftGracePeriod:
+      memory.available: "30s"
+  ```
+</ParamField>
+
+## Authorization and security
+
+<ParamField path="authorization_modes" type="list" default="['Node', 'RBAC']">
+  List of authorization modes for the API server. Defaults to Node and RBAC. Override only if you need to add or replace authorization modes.
+
+  ```yaml
+  authorization_modes:
+    - Node
+    - RBAC
+  ```
+</ParamField>
+
+<ParamField path="kubernetes_audit" type="boolean" default="false">
+  Enables Kubernetes API server audit logging. When set to `true`, configure log retention with `audit_log_maxage`, `audit_log_maxbackups`, and `audit_log_maxsize`.
+</ParamField>
+
+<ParamField path="kube_encrypt_secret_data" type="boolean" default="false">
+  Enables encryption of Kubernetes Secret objects at rest using the API server's encryption provider.
+</ParamField>
+
+## Custom flags for Kubernetes components
+
+For cases where standard variables are not sufficient, you can pass extra flags to individual Kubernetes components through kubeadm:
+
+<AccordionGroup>
+  <Accordion title="API server, controller, and scheduler">
+    ```yaml
+    kube_kubeadm_apiserver_extra_args:
+      audit-log-maxage: "30"
+
+    kube_kubeadm_controller_extra_args:
+      node-monitor-grace-period: "40s"
+
+    kube_kubeadm_scheduler_extra_args:
+      v: "2"
+    ```
+  </Accordion>
+  <Accordion title="Kubelet feature gates">
+    ```yaml
+    kube_feature_gates:
+      - "SomeFeature=true"
+
+    kubelet_feature_gates:
+      - "ContainerCheckpoint=true"
+    ```
+  </Accordion>
+  <Accordion title="Kubeadm patches">
+    For deeper customization beyond extra flags, use `kubeadm_patches` to apply strategic merge, JSON, or merge patches to kubeadm-generated manifests:
+
+    ```yaml
+    kubeadm_patches:
+      - target: kube-apiserver
+        type: strategic
+        patch:
+          metadata:
+            annotations:
+              example.com/env: production
+    ```
+  </Accordion>
+</AccordionGroup>
+
+## Proxy and network connectivity
+
+<ParamField path="http_proxy" type="string">
+  HTTP proxy URL for nodes to use when pulling images or packages. Kubespray propagates this to the container runtime and package manager.
+</ParamField>
+
+<ParamField path="https_proxy" type="string">
+  HTTPS proxy URL. Use `https_proxy_cert_file` to provide a custom CA certificate if the proxy performs TLS inspection.
+</ParamField>
+
+<ParamField path="no_proxy" type="string">
+  Comma-separated list of addresses and domains that should bypass the proxy. Defaults to all internal cluster IPs and hostnames.
+</ParamField>
+
+## Node labels and taints
+
+<ParamField path="node_labels" type="dict">
+  Labels applied to nodes via `kubectl label node`. Define as a dictionary. Can be set per host in `host_vars/` or cluster-wide in `group_vars/`.
+
+  ```yaml
+  node_labels:
+    node-role.kubernetes.io/worker: ""
+    topology.kubernetes.io/zone: us-east-1a
+  ```
+</ParamField>
+
+<ParamField path="node_taints" type="list">
+  Taints applied to nodes via `kubectl taint node`. Define as a list of `key=value:effect` strings.
+
+  ```yaml
+  node_taints:
+    - "node.example.com/external=true:NoSchedule"
+  ```
+</ParamField>

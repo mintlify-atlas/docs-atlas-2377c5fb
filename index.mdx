@@ -1,133 +1,87 @@
 ---
-title: "Introduction"
-description: "Welcome to the new home for your documentation"
-icon: 'star'
+title: "Kubespray: Deploy Production Kubernetes Clusters"
+description: "Kubespray deploys production-ready, highly available Kubernetes clusters using Ansible on any cloud provider or bare metal infrastructure."
 ---
 
-## Setting up
+Kubespray is a collection of Ansible playbooks that automates the deployment and lifecycle management of production-grade Kubernetes clusters. Whether you're deploying on AWS, Azure, GCE, OpenStack, vSphere, or bare metal, Kubespray handles provisioning, configuration, and ongoing operations with a single, composable toolset.
 
-Get your documentation site up and running in minutes.
-
-<Card
-  title="Start here"
-  icon="rocket"
-  href="/quickstart"
-  horizontal
->
-  Follow our three step quickstart guide.
-</Card>
-
-## Make it yours
-
-Design a docs site that looks great and empowers your users.
-
-<Columns cols={2}>
-  <Card
-    title="Edit locally"
-    icon="pen-to-square"
-    href="/development"
-  >
-    Edit your docs locally and preview them in real time.
+<CardGroup cols={2}>
+  <Card title="Quick start" icon="rocket" href="/getting-started/quickstart">
+    Deploy your first cluster in minutes using Docker or Ansible.
   </Card>
-  <Card
-    title="Customize your site"
-    icon="palette"
-    href="/essentials/settings"
-  >
-    Customize the design and colors of your site to match your brand.
+  <Card title="First cluster walkthrough" icon="list-check" href="/getting-started/first-cluster">
+    Step-by-step guide from zero to a running Kubernetes cluster.
   </Card>
-    <Card
-    title="Set up navigation"
-    icon="map"
-    href="/essentials/navigation"
-  >
-    Organize your docs to help users find what they need and succeed with your product.
+  <Card title="Requirements" icon="clipboard-check" href="/getting-started/requirements">
+    Hardware, OS, and software prerequisites before you begin.
   </Card>
-  <Card
-    title="API documentation"
-    icon="terminal"
-    href="/api-reference/introduction"
-  >
-    Auto-generate API documentation from OpenAPI specifications.
+  <Card title="Configuration reference" icon="sliders" href="/configuration/variables">
+    Explore all configurable variables and inventory options.
   </Card>
-</Columns>
+</CardGroup>
 
-## Create beautiful pages
+## Core capabilities
 
-Everything you need to create world-class documentation.
+<CardGroup cols={2}>
+  <Card title="Network plugins" icon="network-wired" href="/configuration/network-plugins">
+    Choose from Calico, Cilium, Flannel, Kube-OVN, and more.
+  </Card>
+  <Card title="Container runtimes" icon="box" href="/configuration/container-runtimes">
+    Use containerd, CRI-O, or Docker as your container runtime.
+  </Card>
+  <Card title="High availability" icon="shield-halved" href="/operations/ha-mode">
+    Multi-control-plane clusters with etcd and load balancer support.
+  </Card>
+  <Card title="Cloud providers" icon="cloud" href="/cloud/overview">
+    Native integration with AWS, Azure, OpenStack, and vSphere.
+  </Card>
+  <Card title="Cluster upgrades" icon="arrow-up-right-dots" href="/operations/upgrades">
+    Rolling upgrades with graceful node drain and uncordon.
+  </Card>
+  <Card title="Air-gap installation" icon="wifi" href="/operations/offline-environment">
+    Deploy in isolated environments with no internet access.
+  </Card>
+  <Card title="Security hardening" icon="lock" href="/operations/hardening">
+    CIS Benchmark-aligned hardening configuration.
+  </Card>
+  <Card title="Large deployments" icon="server" href="/advanced/large-deployments">
+    Tuning and best practices for clusters with hundreds of nodes.
+  </Card>
+</CardGroup>
 
-<Columns cols={2}>
-  <Card
-    title="Write with MDX"
-    icon="pen-fancy"
-    href="/essentials/markdown"
-  >
-    Use MDX to style your docs pages.
-  </Card>
-  <Card
-    title="Code samples"
-    icon="code"
-    href="/essentials/code"
-  >
-    Add sample code to demonstrate how to use your product.
-  </Card>
-  <Card
-    title="Images"
-    icon="image"
-    href="/essentials/images"
-  >
-    Display images and other media.
-  </Card>
-  <Card
-    title="Reusable snippets"
-    icon="recycle"
-    href="/essentials/reusable-snippets"
-  >
-    Write once and reuse across your docs.
-  </Card>
-</Columns>
+## Get started
 
-## Make your content agent ready
+<Steps>
+  <Step title="Install Ansible">
+    Install Ansible 2.14+ and Python dependencies on your control machine.
 
-Make your docs work for humans and AI agents alike.
+    ```bash
+    pip install ansible netaddr
+    ```
+  </Step>
+  <Step title="Clone Kubespray and prepare inventory">
+    ```bash
+    git clone https://github.com/kubernetes-sigs/kubespray.git
+    cd kubespray
+    cp -rfp inventory/sample inventory/mycluster
+    # Edit inventory/mycluster/inventory.ini with your node IPs
+    ```
+  </Step>
+  <Step title="Deploy your cluster">
+    ```bash
+    ansible-playbook -i inventory/mycluster/inventory.ini cluster.yml -b -v \
+      --private-key=~/.ssh/id_rsa
+    ```
+  </Step>
+  <Step title="Access your cluster">
+    ```bash
+    # kubeconfig is written to inventory/mycluster/artifacts/admin.conf
+    export KUBECONFIG=inventory/mycluster/artifacts/admin.conf
+    kubectl get nodes
+    ```
+  </Step>
+</Steps>
 
-<Columns cols={2}>
-  <Card
-    title="Prompt component"
-    icon="robot"
-    href="/agent-ready/prompt"
-  >
-    Embed shareable AI prompts readers can copy or open in Cursor.
-  </Card>
-  <Card
-    title="Visibility"
-    icon="eye"
-    href="/agent-ready/visibility"
-  >
-    Show different content to humans and agents reading your docs.
-  </Card>
-  <Card
-    title="Contextual menu"
-    icon="bolt"
-    href="/agent-ready/contextual"
-  >
-    Give readers one-click access to Claude, ChatGPT, Cursor, and more.
-  </Card>
-  <Card
-    title="AI coding tools"
-    icon="wand-magic-sparkles"
-    href="/ai-tools/claude-code"
-  >
-    Set up Claude Code, Cursor, or Windsurf with Mintlify's skill.
-  </Card>
-</Columns>
-
-## Need inspiration?
-
-<Card
-  title="See complete examples"
-  icon="stars"
-  href="https://mintlify.com/customers"
->
-  Browse our showcase of exceptional documentation sites.
-</Card>
+<Note>
+  Kubespray requires Ansible v2.14+, Jinja 2.11+, and python-netaddr on the machine running playbooks. Target nodes must have internet access unless deploying in [air-gap mode](/operations/offline-environment).
+</Note>

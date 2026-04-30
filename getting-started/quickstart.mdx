@@ -1,0 +1,186 @@
+---
+title: "Deploy a Kubernetes Cluster with Kubespray: Quick Start"
+description: "Three fast paths to a running cluster with Kubespray: Docker-based deployment, Vagrant local testing, and direct Ansible invocation on your own nodes."
+keywords: ["kubespray", "quickstart", "kubernetes", "ansible", "docker", "vagrant", "cluster"]
+---
+
+Kubespray offers three fast paths to a running Kubernetes cluster. The Docker approach bundles all dependencies into a pre-built image and is the simplest way to get started. Vagrant spins up a local multi-node cluster for development and testing. The direct Ansible path gives you the most control and is how most production deployments work.
+
+## Docker
+
+The pre-built Kubespray Docker image at `quay.io/kubespray/kubespray` includes the correct Ansible version and all Python dependencies. You mount your inventory and SSH key into the container and run the playbook from inside it — no local Python environment setup required.
+
+<Steps>
+  <Step title="Ensure Docker is installed">
+    Verify Docker is available on your machine:
+
+    ```bash
+    docker --version
+    ```
+  </Step>
+  <Step title="Prepare your inventory">
+    Create a copy of the sample inventory to use as your starting point:
+
+    ```bash
+    cp -rfp inventory/sample inventory/mycluster
+    ```
+
+    Edit `inventory/mycluster/inventory.ini` with the IP addresses of your target nodes.
+  </Step>
+  <Step title="Run the Kubespray container">
+    Mount your inventory directory and SSH private key into the container, then launch the cluster playbook:
+
+    ```bash
+    docker run --rm -it \
+      --mount type=bind,source="$(pwd)"/inventory/sample,dst=/inventory \
+      --mount type=bind,source="${HOME}"/.ssh/id_rsa,dst=/root/.ssh/id_rsa \
+      quay.io/kubespray/kubespray:v2.30.0 bash
+    ```
+
+    Inside the container, run:
+
+    ```bash
+    ansible-playbook -i /inventory/inventory.ini \
+      --private-key /root/.ssh/id_rsa cluster.yml
+    ```
+  </Step>
+</Steps>
+
+<Tip>
+  The Docker image is also the recommended way to work around local Python/Ansible version conflicts. If you encounter dependency errors when installing requirements locally, pull the pre-built image instead.
+</Tip>
+
+## Vagrant
+
+Vagrant provisions a local multi-node cluster on your workstation using VirtualBox (or another supported provider). This is ideal for testing Kubespray configuration changes before applying them to real infrastructure.
+
+<Steps>
+  <Step title="Check Python and pip">
+    Vagrant provisioning requires Python and pip to install Ansible:
+
+    ```bash
+    python -V && pip -V
+    ```
+
+    If either command fails, install Python from [python.org/downloads](https://www.python.org/downloads/source/).
+  </Step>
+  <Step title="Install Ansible">
+    Install Ansible into a virtual environment (recommended):
+
+    ```bash
+    VENVDIR=kubespray-venv
+    python3 -m venv $VENVDIR
+    source $VENVDIR/bin/activate
+    pip install -r requirements.txt
+    ```
+  </Step>
+  <Step title="Start the cluster">
+    From the Kubespray repository root, start the Vagrant VMs:
+
+    ```bash
+    vagrant up
+    ```
+
+    Vagrant will provision the VMs and run the Kubespray Ansible playbooks automatically.
+  </Step>
+</Steps>
+
+<Note>
+  The default network plugin for Vagrant deployments is **Flannel**, not Calico. This is set automatically in the Vagrant configuration.
+</Note>
+
+## Ansible (direct)
+
+For production deployments or any environment where you manage your own infrastructure, run Ansible directly against your target nodes.
+
+<Steps>
+  <Step title="Clone the repository">
+    ```bash
+    git clone https://github.com/kubernetes-sigs/kubespray.git
+    cd kubespray
+    ```
+  </Step>
+  <Step title="Install dependencies into a virtual environment">
+    ```bash
+    python3 -m venv kubespray-venv
+    source kubespray-venv/bin/activate
+    pip install -r requirements.txt
+    ```
+  </Step>
+  <Step title="Create your inventory">
+    Copy the sample inventory and edit it with your node IP addresses:
+
+    ```bash
+    cp -rfp inventory/sample inventory/mycluster
+    ```
+
+    Open `inventory/mycluster/inventory.ini` and configure your control plane and worker nodes:
+
+    ```ini
+    # inventory/mycluster/inventory.ini
+    [kube_control_plane]
+    node1 ansible_host=10.240.0.10 ip=10.240.0.10
+
+    [etcd:children]
+    kube_control_plane
+
+    [kube_node]
+    node2 ansible_host=10.240.0.20 ip=10.240.0.20
+    node3 ansible_host=10.240.0.21 ip=10.240.0.21
+
+    [k8s_cluster:children]
+    kube_control_plane
+    kube_node
+    ```
+  </Step>
+  <Step title="Review cluster variables">
+    Adjust configuration in `inventory/mycluster/group_vars/` before deploying:
+
+    ```bash
+    # All nodes (including etcd)
+    $EDITOR inventory/mycluster/group_vars/all/all.yml
+
+    # All nodes in the cluster
+    $EDITOR inventory/mycluster/group_vars/k8s_cluster/k8s_cluster.yml
+
+    # Control plane nodes only
+    $EDITOR inventory/mycluster/group_vars/kube_control_plane.yml
+
+    # Worker nodes only
+    $EDITOR inventory/mycluster/group_vars/kube_node.yml
+    ```
+  </Step>
+  <Step title="Deploy the cluster">
+    Run the cluster playbook. The `-b` flag enables privilege escalation (become):
+
+    ```bash
+    ansible-playbook -i inventory/mycluster/ cluster.yml -b -v \
+      --private-key=~/.ssh/private_key
+    ```
+
+    Deployment typically takes 15–20 minutes depending on hardware and network speed.
+  </Step>
+  <Step title="Access the cluster">
+    After deployment, the kubeconfig is written to `inventory/mycluster/artifacts/admin.conf` (if `kubeconfig_localhost: true` is set):
+
+    ```bash
+    export KUBECONFIG=inventory/mycluster/artifacts/admin.conf
+    kubectl get nodes
+    ```
+  </Step>
+</Steps>
+
+<Warning>
+  Kubespray does not manage firewall rules. Disable or configure your firewall manually before deployment to avoid connectivity issues between nodes.
+</Warning>
+
+## Next steps
+
+<CardGroup cols={2}>
+  <Card title="First cluster walkthrough" icon="list-check" href="/getting-started/first-cluster">
+    End-to-end tutorial using Google Cloud Platform to provision infrastructure and deploy a cluster.
+  </Card>
+  <Card title="Requirements" icon="clipboard-check" href="/getting-started/requirements">
+    Review all hardware, OS, network, and software requirements.
+  </Card>
+</CardGroup>

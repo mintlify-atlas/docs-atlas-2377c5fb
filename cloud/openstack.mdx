@@ -1,0 +1,185 @@
+---
+title: 'Deploying Kubespray on OpenStack'
+description: 'Set up the OpenStack external cloud controller manager, Cinder CSI storage, Octavia load balancers, and L3 CNI networking on Kubespray.'
+keywords: ['kubespray', 'openstack', 'cloud controller manager', 'cinder', 'octavia', 'floating ip', 'calico']
+---
+
+Kubespray deploys Kubernetes on OpenStack using the external cloud controller manager (CCM), which integrates with Keystone for authentication, Octavia for load balancers, and Cinder for persistent storage. The CCM is configured to use Octavia by default — the Neutron LBaaS integration is no longer used.
+
+## Compatible public clouds
+
+Kubespray has been tested against the following OpenStack public clouds:
+
+- Auro, Betacloud, CityCloud, DreamHost, ELASTX, EnterCloudSuite
+- FugaCloud, Infomaniak, Open Telekom Cloud, OVHcloud, Rackspace
+- Ultimum, VexxHost, Zetta
+
+<Note>
+Open Telekom Cloud requires `wait_for_floatingip = "true"` in your `cluster.tfvars`.
+</Note>
+
+## Enabling the OpenStack cloud provider
+
+<Steps>
+  <Step title="Enable the external cloud provider">
+    In `group_vars/all/all.yml`, set the cloud provider to external and specify OpenStack:
+
+    ```yaml group_vars/all/all.yml
+    cloud_provider: external
+    external_cloud_provider: openstack
+    ```
+  </Step>
+  <Step title="Enable Cinder CSI">
+    In `group_vars/all/openstack.yml`, enable the Cinder CSI plugin for persistent volume support:
+
+    ```yaml group_vars/all/openstack.yml
+    cinder_csi_enabled: true
+    ```
+  </Step>
+  <Step title="Source your OpenStack credentials">
+    Source your OpenStack RC file to make credentials available to the external cloud provider. The CCM reads these from environment variables at deploy time:
+
+    ```bash
+    source path/to/your/openstack-rc
+    ```
+
+    This sets variables such as `OS_AUTH_URL`, `OS_USERNAME`, `OS_PASSWORD`, `OS_PROJECT_NAME`, and `OS_REGION_NAME`.
+  </Step>
+  <Step title="Run the cluster playbook">
+    ```bash
+    ansible-playbook -i inventory/mycluster/hosts.yaml -b cluster.yml
+    ```
+  </Step>
+</Steps>
+
+## Cinder CSI configuration
+
+### Topology support
+
+If your OpenStack provider uses custom availability zone names, enable topology support and override the default `nova` zone name:
+
+```yaml group_vars/all/openstack.yml
+cinder_topology: true
+cinder_topology_zones:
+  - my-custom-az
+```
+
+### Ignoring volume availability zones
+
+To schedule volumes on any available node AZ regardless of the volume AZ, set:
+
+```yaml group_vars/all/openstack.yml
+cinder_csi_ignore_volume_az: true
+```
+
+## Load balancer configuration
+
+The OpenStack CCM uses Octavia for all `LoadBalancer`-type Services. Configure LBaaS with the following variables in `group_vars/all/openstack.yml`:
+
+```yaml group_vars/all/openstack.yml
+external_openstack_lbaas_enabled: true
+external_openstack_lbaas_floating_network_id: "Neutron network ID to get floating IP from"
+external_openstack_lbaas_floating_subnet_id: "Neutron subnet ID to get floating IP from"
+external_openstack_lbaas_method: ROUND_ROBIN
+external_openstack_lbaas_provider: amphora
+external_openstack_lbaas_subnet_id: "Neutron subnet ID to create LBaaS VIP"
+external_openstack_lbaas_member_subnet_id: "Neutron subnet ID for load balancer members"
+external_openstack_lbaas_network_id: "Neutron network ID to create LBaaS VIP"
+external_openstack_lbaas_manage_security_groups: false
+external_openstack_lbaas_create_monitor: false
+external_openstack_lbaas_monitor_delay: 5s
+external_openstack_lbaas_monitor_max_retries: 1
+external_openstack_lbaas_monitor_timeout: 3s
+external_openstack_lbaas_internal_lb: false
+```
+
+<Tip>
+Use `external_openstack_lbaas_internal_lb: true` for internal-only load balancers that do not receive a floating IP.
+</Tip>
+
+## Multi-NIC VM configuration
+
+If your OpenStack VMs have multiple network interfaces, the default OpenStack networking configuration may cause routing issues. Override the networking settings to specify which networks to use:
+
+```yaml group_vars/all/openstack.yml
+external_openstack_network_ipv6_disabled: false
+external_openstack_network_internal_networks: []
+external_openstack_network_public_networks: []
+```
+
+## Metadata service configuration
+
+If your environment uses a non-default metadata search order, override it:
+
+```yaml group_vars/all/openstack.yml
+external_openstack_metadata_search_order: "configDrive,metadataService"
+```
+
+## L3 CNI networking (Calico and kube-router)
+
+Calico and kube-router are Layer 3 CNI plugins — they route traffic using pod IP addresses directly rather than encapsulating packets with host IP addresses. OpenStack's anti-spoofing protection drops packets from unknown IPs by default, which breaks pod-to-pod communication.
+
+You must configure OpenStack to allow pod subnet traffic on every instance port.
+
+<Steps>
+  <Step title="List your OpenStack instances">
+    ```bash
+    openstack server list --project YOUR_PROJECT
+    ```
+
+    Example output:
+    ```
+    +--------------------------------------+-------+----------------------------------+--------+-------------+
+    | ID                                   | Name  | Tenant ID                        | Status | Power State |
+    +--------------------------------------+-------+----------------------------------+--------+-------------+
+    | e1f48aad-df96-4bce-bf61-62ae12bf3f95 | k8s-1 | fba478440cb2444a9e5cf03717eb5d6f | ACTIVE | Running     |
+    | 725cd548-6ea3-426b-baaa-e7306d3c8052 | k8s-2 | fba478440cb2444a9e5cf03717eb5d6f | ACTIVE | Running     |
+    +--------------------------------------+-------+----------------------------------+--------+-------------+
+    ```
+  </Step>
+  <Step title="Find the Neutron ports for each instance">
+    ```bash
+    openstack port list -c id -c device_id --project YOUR_PROJECT
+    ```
+
+    Example output:
+    ```
+    +--------------------------------------+--------------------------------------+
+    | id                                   | device_id                            |
+    +--------------------------------------+--------------------------------------+
+    | 5662a4e0-e646-47f0-bf88-d80fbd2d99ef | e1f48aad-df96-4bce-bf61-62ae12bf3f95 |
+    | e5ae2045-a1e1-4e99-9aac-4353889449a7 | 725cd548-6ea3-426b-baaa-e7306d3c8052 |
+    +--------------------------------------+--------------------------------------+
+    ```
+  </Step>
+  <Step title="Allow pod and service subnets on each port">
+    You must allow both `kube_service_addresses` (default `10.233.0.0/18`) and `kube_pods_subnet` (default `10.233.64.0/18`) on each port:
+
+    ```bash
+    openstack port set 5662a4e0-e646-47f0-bf88-d80fbd2d99ef \
+      --allowed-address ip-address=10.233.0.0/18 \
+      --allowed-address ip-address=10.233.64.0/18
+
+    openstack port set e5ae2045-a1e1-4e99-9aac-4353889449a7 \
+      --allowed-address ip-address=10.233.0.0/18 \
+      --allowed-address ip-address=10.233.64.0/18
+    ```
+
+    If all VMs in the tenant belong to the Kubespray deployment, apply the change in bulk:
+
+    ```bash
+    openstack port list --device-owner=compute:nova -c ID -f value | \
+      xargs -tI@ openstack port set @ \
+        --allowed-address ip-address=10.233.0.0/18 \
+        --allowed-address ip-address=10.233.64.0/18
+    ```
+  </Step>
+</Steps>
+
+<Warning>
+Complete the allowed-address configuration before running the cluster playbook. If the ports are not updated first, pod networking will be broken on all nodes using Calico or kube-router.
+</Warning>
+
+## Terraform provisioning
+
+The `contrib/terraform/openstack/` directory contains a Terraform configuration that provisions OpenStack compute, networking, and security group resources for a Kubespray cluster. Review `variables.tf` for all configurable settings, and copy `sample-inventory/` as a starting point for your inventory.

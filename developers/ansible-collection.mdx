@@ -1,0 +1,156 @@
+---
+title: "Install and use Kubespray as an Ansible collection"
+description: "Use Kubespray as the kubernetes_sigs.kubespray Ansible collection: install from GitHub, reference playbooks by FQCN, and satisfy collection dependencies."
+---
+
+Kubespray can be consumed as a standard [Ansible collection](https://docs.ansible.com/ansible/latest/user_guide/collections_using.html), letting you import its playbooks and roles into your own automation projects without cloning the entire repository. The collection is published under the `kubernetes_sigs` namespace as `kubernetes_sigs.kubespray`.
+
+## Collection metadata
+
+From `galaxy.yml`:
+
+| Field | Value |
+|---|---|
+| Namespace | `kubernetes_sigs` |
+| Name | `kubespray` |
+| Version | `2.32.0` |
+| Description | Deploy a production ready Kubernetes cluster |
+| Repository | https://github.com/kubernetes-sigs/kubespray |
+| Documentation | https://kubespray.io |
+| License | See `LICENSE` file |
+
+### Collection dependencies
+
+The collection declares the following minimum dependency versions:
+
+```yaml
+dependencies:
+  ansible.utils: '>=2.5.0'
+  community.crypto: '>=2.22.3'
+  community.general: '>=7.0.0'
+  ansible.netcommon: '>=5.3.0'
+  ansible.posix: '>=1.5.4'
+  community.docker: '>=3.11.0'
+  kubernetes.core: '>=2.4.2'
+```
+
+These are installed automatically when you install the collection with `ansible-galaxy`.
+
+## Installation and usage
+
+<Steps>
+  <Step title="Build your inventory">
+    Set up an inventory with the appropriate host groups (`kube_control_plane`, `kube_node`, `etcd`) and required group variables. See the [Getting started guide](/getting-started/quickstart) for inventory structure.
+  </Step>
+
+  <Step title="Add Kubespray to requirements.yml">
+    Create or update a `requirements.yml` file to declare the collection. Pin to a specific tag for reproducible deployments:
+
+    ```yaml
+    collections:
+      - name: https://github.com/kubernetes-sigs/kubespray
+        type: git
+        version: master   # replace with a release tag, e.g. v2.32.0
+    ```
+
+    <Tip>
+      Use a release tag such as `v2.32.0` rather than `master` in production environments to ensure repeatable deployments.
+    </Tip>
+  </Step>
+
+  <Step title="Install the collection">
+    ```bash
+    ansible-galaxy install -r requirements.yml
+    ```
+
+    This downloads the collection and all its declared dependencies into your configured collections path (typically `~/.ansible/collections`).
+  </Step>
+
+  <Step title="Write a playbook that imports the cluster playbook">
+    Reference the collection's `cluster` playbook using its fully qualified collection name (FQCN):
+
+    ```yaml
+    # site.yml
+    - name: Install Kubernetes
+      ansible.builtin.import_playbook: kubernetes_sigs.kubespray.cluster
+    ```
+
+    Other available playbooks in the collection follow the same pattern:
+
+    ```yaml
+    # Scale out worker nodes
+    - name: Scale cluster
+      ansible.builtin.import_playbook: kubernetes_sigs.kubespray.scale
+
+    # Upgrade the cluster
+    - name: Upgrade cluster
+      ansible.builtin.import_playbook: kubernetes_sigs.kubespray.upgrade-cluster
+
+    # Reset/remove the cluster
+    - name: Reset cluster
+      ansible.builtin.import_playbook: kubernetes_sigs.kubespray.reset
+    ```
+  </Step>
+
+  <Step title="Run the playbook">
+    Replace `INVENTORY` with the path to your inventory file and `PLAYBOOK` with the name of the playbook you created:
+
+    ```bash
+    ansible-playbook -i INVENTORY --become --become-user=root PLAYBOOK
+    ```
+
+    For example:
+
+    ```bash
+    ansible-playbook -i inventory/mycluster/hosts.yaml --become --become-user=root site.yml
+    ```
+  </Step>
+</Steps>
+
+## Ansible version compatibility
+
+Kubespray requires Ansible 2.18 or later. The supported Python version range for the current release is:
+
+| Ansible version | Python version |
+|---|---|
+| `>=2.18.0, <2.19.0` | 3.11–3.13 |
+
+Install Ansible into a dedicated Python virtual environment to avoid conflicts:
+
+```bash
+VENVDIR=kubespray-venv
+python3 -m venv $VENVDIR
+source $VENVDIR/bin/activate
+pip install -r requirements.txt
+```
+
+## Custom modules and ANSIBLE_LIBRARY
+
+Kubespray ships custom Ansible modules that must be discoverable by Ansible at runtime. When using the collection, this is handled automatically. If you encounter module-not-found errors, set the library path explicitly:
+
+```bash
+export ANSIBLE_LIBRARY=<kubespray_dir>/library
+```
+
+## Using the pre-built Docker image
+
+The Kubespray project publishes a Docker image that includes the correct version of Ansible, all Python dependencies, and the collection pre-installed. This is the simplest way to ensure a fully compatible environment:
+
+```bash
+git checkout v2.32.0
+docker pull quay.io/kubespray/kubespray:v2.32.0
+docker run --rm -it \
+  --mount type=bind,source="$(pwd)"/inventory/sample,dst=/inventory \
+  --mount type=bind,source="${HOME}"/.ssh/id_rsa,dst=/root/.ssh/id_rsa \
+  quay.io/kubespray/kubespray:v2.32.0 bash
+```
+
+Inside the container, run playbooks against your inventory:
+
+```bash
+ansible-playbook -i /inventory/inventory.ini --private-key /root/.ssh/id_rsa cluster.yml
+```
+
+<Warning>
+  The Docker image tag must match the collection version you intend to deploy. Mixing a container from `v2.32.0` with an inventory written for an older release may cause compatibility issues.
+</Warning>
